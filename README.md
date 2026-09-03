@@ -79,7 +79,7 @@ go run ./cmd/gamepilot \
 
 The default LLM base URL is `http://localhost:1234/v1`, which is convenient for a local OpenAI-compatible server. Supply the model identifier exposed by your server. Keyless local servers can disable the API-key environment lookup with `-llm-api-key-env ""`.
 
-GamePilot defaults to `-llm-thinking off` and `-llm-max-tokens 64`. For Qwen3/vLLM-style endpoints, non-thinking mode sends `chat_template_kwargs.enable_thinking=false`, which is much better suited to the low-latency `Observation -> Placement` loop than long reasoning traces.
+GamePilot defaults to `-llm-thinking off` and `-llm-max-tokens 64`. For Qwen3/vLLM-style endpoints, non-thinking mode sends `chat_template_kwargs.enable_thinking=false`, which Qwen documents as the hard non-thinking switch and which is much better suited to the low-latency `Observation -> Placement` loop than long reasoning traces.
 
 ```bash
 go run ./cmd/gamepilot \
