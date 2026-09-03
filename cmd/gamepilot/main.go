@@ -23,11 +23,11 @@ func main() {
 
 func run() error {
 	romPath := flag.String("rom", "", "path to the supported Tetris Rev 1 ROM")
-	planner := flag.String("planner", "observe", "mode: observe, place, heuristic, llm, or replay")
+	planner := flag.String("planner", "observe", "mode: observe, place, heuristic, lookahead, llm, or replay")
 	rotation := flag.Int("rotation", 0, "raw Tetris rotation 0..3 for -planner place")
 	column := flag.Int("column", 0, "leftmost occupied board column for -planner place")
-	pieces := flag.Int("pieces", 25, "number of placements to execute for -planner heuristic or llm")
-	replayOut := flag.String("replay-out", "", "write a deterministic replay JSON file for place, heuristic, or llm mode")
+	pieces := flag.Int("pieces", 25, "number of placements to execute for -planner heuristic, lookahead, or llm")
+	replayOut := flag.String("replay-out", "", "write a deterministic replay JSON file for place, heuristic, lookahead, or llm mode")
 	replayIn := flag.String("replay-in", "", "replay JSON file to verify with -planner replay")
 	llmBaseURL := flag.String("llm-base-url", envOr("OPENAI_BASE_URL", "http://localhost:1234/v1"), "OpenAI-compatible base URL, normally ending in /v1")
 	llmModel := flag.String("llm-model", os.Getenv("OPENAI_MODEL"), "model name for -planner llm")
@@ -35,15 +35,16 @@ func run() error {
 	llmTimeout := flag.Duration("llm-timeout", 60*time.Second, "HTTP timeout for each LLM request")
 	llmThinking := flag.String("llm-thinking", "off", "thinking mode for compatible servers: off, auto, or on")
 	llmMaxTokens := flag.Int("llm-max-tokens", 64, "maximum completion tokens per LLM placement request")
+	llmCandidates := flag.Int("llm-candidates", tetris.DefaultLLMShortlistSize, "maximum two-ply candidates included in each LLM prompt")
 	flag.Parse()
 
 	if *romPath == "" {
 		return errors.New("-rom is required")
 	}
-	if *planner != "observe" && *planner != "place" && *planner != "heuristic" && *planner != "llm" && *planner != "replay" {
-		return fmt.Errorf("planner %q is not implemented; use -planner observe, place, heuristic, llm, or replay", *planner)
+	if *planner != "observe" && *planner != "place" && *planner != "heuristic" && *planner != "lookahead" && *planner != "llm" && *planner != "replay" {
+		return fmt.Errorf("planner %q is not implemented; use -planner observe, place, heuristic, lookahead, llm, or replay", *planner)
 	}
-	if (*planner == "heuristic" || *planner == "llm") && *pieces < 1 {
+	if (*planner == "heuristic" || *planner == "lookahead" || *planner == "llm") && *pieces < 1 {
 		return fmt.Errorf("-pieces must be at least 1 for -planner %s", *planner)
 	}
 	if *planner == "llm" && *llmModel == "" {
@@ -58,14 +59,17 @@ func run() error {
 	if *planner == "llm" && *llmMaxTokens < 1 {
 		return fmt.Errorf("-llm-max-tokens must be at least 1")
 	}
+	if *planner == "llm" && *llmCandidates < 1 {
+		return fmt.Errorf("-llm-candidates must be at least 1")
+	}
 	if *planner == "replay" && *replayIn == "" {
 		return fmt.Errorf("-replay-in is required for -planner replay")
 	}
 	if *planner != "replay" && *replayIn != "" {
 		return fmt.Errorf("-replay-in is only valid with -planner replay")
 	}
-	if *replayOut != "" && *planner != "place" && *planner != "heuristic" && *planner != "llm" {
-		return fmt.Errorf("-replay-out is only valid with -planner place, -planner heuristic, or -planner llm")
+	if *replayOut != "" && *planner != "place" && *planner != "heuristic" && *planner != "lookahead" && *planner != "llm" {
+		return fmt.Errorf("-replay-out is only valid with -planner place, heuristic, lookahead, or llm")
 	}
 
 	sess, err := session.OpenROM(*romPath)
@@ -143,6 +147,39 @@ func run() error {
 				}
 			}
 		}
+	case "lookahead":
+		obs = initial
+		for move := 1; move <= *pieces && !obs.GameOver; move++ {
+			before := obs
+			decision, planErr := tetris.ChooseLookaheadPlacement(before)
+			if planErr != nil {
+				return fmt.Errorf("lookahead move %d: %w", move, planErr)
+			}
+			reply := "topout"
+			if decision.Reply != nil {
+				reply = fmt.Sprintf("r%d/c%d", decision.Reply.Placement.Rotation, decision.Reply.Placement.TargetColumn)
+			}
+			fmt.Printf(
+				"Move %d: piece=%s rotation=%d target_column=%d lookahead=%.6f total_lines=%d preview=%s best_reply=%s\n",
+				move,
+				before.CurrentPiece.Kind,
+				decision.First.Placement.Rotation,
+				decision.First.Placement.TargetColumn,
+				decision.Score,
+				decision.TotalLines,
+				before.NextPiece.Kind,
+				reply,
+			)
+			obs, err = tetris.ExecutePlacement(ctx, sess.Emulator(), decision.First.Placement)
+			if err != nil {
+				return fmt.Errorf("lookahead move %d execute: %w", move, err)
+			}
+			if record != nil {
+				if err := record.Append(before, decision.First.Placement, obs); err != nil {
+					return fmt.Errorf("lookahead move %d record: %w", move, err)
+				}
+			}
+		}
 	case "llm":
 		apiKey := ""
 		if *llmAPIKeyEnv != "" {
@@ -161,22 +198,24 @@ func run() error {
 		case "auto":
 			client.Thinking = nil
 		}
-		fmt.Printf("LLM: model=%s base_url=%s thinking=%s max_tokens=%d\n", *llmModel, *llmBaseURL, *llmThinking, *llmMaxTokens)
+		fmt.Printf("LLM: model=%s base_url=%s thinking=%s max_tokens=%d candidates=%d\n", *llmModel, *llmBaseURL, *llmThinking, *llmMaxTokens, *llmCandidates)
 		obs = initial
 		for move := 1; move <= *pieces && !obs.GameOver; move++ {
 			before := obs
-			decision, planErr := tetris.ChooseLLMPlacement(ctx, client, before)
+			decision, planErr := tetris.ChooseLLMPlacementWithShortlist(ctx, client, before, *llmCandidates)
 			if planErr != nil {
 				return fmt.Errorf("llm move %d: %w", move, planErr)
 			}
 			fmt.Printf(
-				"Move %d: piece=%s rotation=%d target_column=%d model=%s attempts=%d\n",
+				"Move %d: piece=%s rotation=%d target_column=%d model=%s attempts=%d candidates=%d/%d\n",
 				move,
 				before.CurrentPiece.Kind,
 				decision.Placement.Rotation,
 				decision.Placement.TargetColumn,
 				*llmModel,
 				decision.Attempts,
+				decision.Candidates,
+				decision.TotalCandidates,
 			)
 			obs, err = tetris.ExecutePlacement(ctx, sess.Emulator(), decision.Placement)
 			if err != nil {

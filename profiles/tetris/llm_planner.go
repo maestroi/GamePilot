@@ -18,32 +18,40 @@ type JSONCompleter interface {
 }
 
 // LLMDecision records the validated game-level action selected by the model.
-// Attempts is useful when diagnosing local models that needed format retries.
+// Candidate counts make prompt-shortlisting behavior visible in logs/benchmarks.
 type LLMDecision struct {
-	Placement Placement `json:"placement"`
-	Attempts  int       `json:"attempts"`
+	Placement       Placement `json:"placement"`
+	Attempts        int       `json:"attempts"`
+	Candidates      int       `json:"candidates"`
+	TotalCandidates int       `json:"total_candidates"`
 }
 
 const llmSystemPrompt = `You are GamePilot's Game Boy Tetris placement planner.
 This is a low-latency control task. Return the answer immediately and do not include reasoning in the response.
 Choose exactly one placement from the legal candidates supplied by the user.
+The candidates have already been ranked with deterministic two-ply simulation using the known preview piece.
 Return ONLY a JSON object with exactly these integer fields: "rotation" and "target_column".
 Do not use markdown, code fences, commentary, or additional fields.
 rotation is the ROM's raw orientation 0..3. target_column is the leftmost occupied board column.
 The deterministic controller will execute your choice exactly, so never invent a placement outside the supplied candidate list.`
 
-// ChooseLLMPlacement asks an external model to select one already-simulated
-// legal placement. Model output never reaches the emulator directly: it is
-// strictly decoded and checked against the deterministic candidate set first.
+// ChooseLLMPlacement uses the default bounded two-ply shortlist.
 func ChooseLLMPlacement(ctx context.Context, model JSONCompleter, obs Observation) (LLMDecision, error) {
+	return ChooseLLMPlacementWithShortlist(ctx, model, obs, DefaultLLMShortlistSize)
+}
+
+// ChooseLLMPlacementWithShortlist asks an external model to select one already-
+// simulated two-ply candidate. Model output never reaches the emulator directly:
+// it is strictly decoded and checked against the deterministic shortlist first.
+func ChooseLLMPlacementWithShortlist(ctx context.Context, model JSONCompleter, obs Observation, shortlistSize int) (LLMDecision, error) {
 	if model == nil {
 		return LLMDecision{}, fmt.Errorf("tetris: LLM planner requires a model client")
 	}
-	candidates, err := LegalSimulations(obs)
+	candidates, totalCandidates, err := ShortlistLookaheadSimulations(obs, shortlistSize)
 	if err != nil {
 		return LLMDecision{}, err
 	}
-	prompt := formatLLMPlacementPrompt(obs, candidates)
+	prompt := formatLLMPlacementPrompt(obs, candidates, totalCandidates)
 
 	var lastErr error
 	for attempt := 1; attempt <= maxLLMPlacementAttempts; attempt++ {
@@ -52,22 +60,27 @@ func ChooseLLMPlacement(ctx context.Context, model JSONCompleter, obs Observatio
 			return LLMDecision{}, fmt.Errorf("tetris: LLM request attempt %d: %w", attempt, err)
 		}
 		placement, err := decodeLLMPlacement(response)
-		if err == nil && placementInCandidates(placement, candidates) {
-			return LLMDecision{Placement: placement, Attempts: attempt}, nil
+		if err == nil && placementInLookaheadCandidates(placement, candidates) {
+			return LLMDecision{
+				Placement:       placement,
+				Attempts:        attempt,
+				Candidates:      len(candidates),
+				TotalCandidates: totalCandidates,
+			}, nil
 		}
 		if err == nil {
-			err = fmt.Errorf("placement rotation=%d target_column=%d is not in the legal candidate list", placement.Rotation, placement.TargetColumn)
+			err = fmt.Errorf("placement rotation=%d target_column=%d is not in the shortlisted legal candidate list", placement.Rotation, placement.TargetColumn)
 		}
 		lastErr = err
-		prompt = formatLLMPlacementPrompt(obs, candidates) + fmt.Sprintf(
-			"\n\nYour previous response was invalid: %s\nReturn only one legal JSON object with rotation and target_column.",
+		prompt = formatLLMPlacementPrompt(obs, candidates, totalCandidates) + fmt.Sprintf(
+			"\n\nYour previous response was invalid: %s\nReturn only one shortlisted legal JSON object with rotation and target_column.",
 			err,
 		)
 	}
 	return LLMDecision{}, fmt.Errorf("tetris: LLM produced no valid placement after %d attempts: %w", maxLLMPlacementAttempts, lastErr)
 }
 
-func formatLLMPlacementPrompt(obs Observation, candidates []Simulation) string {
+func formatLLMPlacementPrompt(obs Observation, candidates []LookaheadSimulation, totalCandidates int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Current piece: %s raw_rotation=%d\n", obs.CurrentPiece.Kind, obs.CurrentPiece.Rotation)
 	fmt.Fprintf(&b, "Next piece: %s raw_rotation=%d\n", obs.NextPiece.Kind, obs.NextPiece.Rotation)
@@ -83,20 +96,39 @@ func formatLLMPlacementPrompt(obs Observation, candidates []Simulation) string {
 		}
 		b.WriteByte('\n')
 	}
-	b.WriteString("Legal candidates and deterministic one-piece simulation metrics:\n")
-	for _, candidate := range candidates {
+	fmt.Fprintf(&b, "Legal candidates (shortlisted %d of %d strategically distinct current-piece outcomes), ranked by deterministic two-ply preview-piece evaluation:\n", len(candidates), totalCandidates)
+	for rank, candidate := range candidates {
+		first := candidate.First
 		fmt.Fprintf(
 			&b,
-			"rotation=%d target_column=%d lines=%d aggregate_height=%d holes=%d bumpiness=%d\n",
-			candidate.Placement.Rotation,
-			candidate.Placement.TargetColumn,
-			candidate.LinesCleared,
-			candidate.AggregateHeight,
-			candidate.Holes,
-			candidate.Bumpiness,
+			"rank=%d rotation=%d target_column=%d immediate_lines=%d first_height=%d first_holes=%d first_bumpiness=%d ",
+			rank+1,
+			first.Placement.Rotation,
+			first.Placement.TargetColumn,
+			first.LinesCleared,
+			first.AggregateHeight,
+			first.Holes,
+			first.Bumpiness,
+		)
+		if candidate.Reply == nil {
+			fmt.Fprintf(&b, "preview_reply=topout total_lines=%d lookahead=%.6f\n", candidate.TotalLines, candidate.Score)
+			continue
+		}
+		reply := candidate.Reply
+		fmt.Fprintf(
+			&b,
+			"preview_rotation=%d preview_target_column=%d preview_lines=%d total_lines=%d leaf_height=%d leaf_holes=%d leaf_bumpiness=%d lookahead=%.6f\n",
+			reply.Placement.Rotation,
+			reply.Placement.TargetColumn,
+			reply.LinesCleared,
+			candidate.TotalLines,
+			reply.AggregateHeight,
+			reply.Holes,
+			reply.Bumpiness,
+			candidate.Score,
 		)
 	}
-	b.WriteString("Choose one candidate. Output JSON only.")
+	b.WriteString("Choose one shortlisted candidate. Output JSON only.")
 	return b.String()
 }
 
@@ -120,9 +152,9 @@ func decodeLLMPlacement(raw string) (Placement, error) {
 	return placement, nil
 }
 
-func placementInCandidates(placement Placement, candidates []Simulation) bool {
+func placementInLookaheadCandidates(placement Placement, candidates []LookaheadSimulation) bool {
 	for _, candidate := range candidates {
-		if candidate.Placement == placement {
+		if candidate.First.Placement == placement {
 			return true
 		}
 	}
