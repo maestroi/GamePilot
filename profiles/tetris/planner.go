@@ -27,14 +27,14 @@ var DefaultHeuristicWeights = HeuristicWeights{
 // Simulation is the deterministic result of dropping one placement straight
 // down onto a settled board, followed by the ROM's line-clear semantics.
 type Simulation struct {
-	Placement       Placement                        `json:"placement"`
-	Board           [BoardRows][BoardColumns]Cell   `json:"board"`
-	LandingRow      int                              `json:"landing_row"`
-	LinesCleared    int                              `json:"lines_cleared"`
-	AggregateHeight int                              `json:"aggregate_height"`
-	Holes           int                              `json:"holes"`
-	Bumpiness       int                              `json:"bumpiness"`
-	Score           float64                          `json:"score"`
+	Placement       Placement                      `json:"placement"`
+	Board           [BoardRows][BoardColumns]Cell `json:"board"`
+	LandingRow      int                            `json:"landing_row"`
+	LinesCleared    int                            `json:"lines_cleared"`
+	AggregateHeight int                            `json:"aggregate_height"`
+	Holes           int                            `json:"holes"`
+	Bumpiness       int                            `json:"bumpiness"`
+	Score           float64                        `json:"score"`
 }
 
 // SimulatePlacement applies exact ROM-derived tetromino geometry to the settled
@@ -119,27 +119,25 @@ func SimulatePlacement(board [BoardRows][BoardColumns]Cell, kind PieceKind, plac
 	}, nil
 }
 
-// ChooseHeuristicPlacement enumerates every raw ROM rotation and legal leftmost
-// column, simulates the resulting drop, and selects the highest-scoring board.
-// Ties prefer fewer controller inputs, then lower raw rotation and column for a
-// stable deterministic result.
-func ChooseHeuristicPlacement(obs Observation) (Simulation, error) {
+// LegalSimulations enumerates every non-top-out placement for the current
+// observation. This is the shared deterministic candidate set used by both the
+// heuristic planner and external model planners.
+func LegalSimulations(obs Observation) ([]Simulation, error) {
 	if obs.GameOver {
-		return Simulation{}, fmt.Errorf("tetris: cannot plan after game over")
+		return nil, fmt.Errorf("tetris: cannot plan after game over")
 	}
 	if !obs.Ready {
-		return Simulation{}, fmt.Errorf("tetris: cannot plan at frame %d: game is not ready", obs.Frame)
+		return nil, fmt.Errorf("tetris: cannot plan at frame %d: game is not ready", obs.Frame)
 	}
 	if obs.CurrentPiece.Kind == PieceUnknown {
-		return Simulation{}, fmt.Errorf("tetris: cannot plan unknown current piece")
+		return nil, fmt.Errorf("tetris: cannot plan unknown current piece")
 	}
 
-	var best Simulation
-	haveBest := false
+	var candidates []Simulation
 	for rotation := 0; rotation < 4; rotation++ {
 		minX, maxX, err := horizontalBounds(obs.CurrentPiece.Kind, rotation)
 		if err != nil {
-			return Simulation{}, err
+			return nil, err
 		}
 		width := maxX - minX + 1
 		for column := 0; column <= BoardColumns-width; column++ {
@@ -151,16 +149,30 @@ func ChooseHeuristicPlacement(obs Observation) (Simulation, error) {
 				continue
 			}
 			if err != nil {
-				return Simulation{}, err
+				return nil, err
 			}
-			if !haveBest || betterSimulation(obs, candidate, best) {
-				best = candidate
-				haveBest = true
-			}
+			candidates = append(candidates, candidate)
 		}
 	}
-	if !haveBest {
-		return Simulation{}, fmt.Errorf("tetris: no non-top-out placement for %s", obs.CurrentPiece.Kind)
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("tetris: no non-top-out placement for %s", obs.CurrentPiece.Kind)
+	}
+	return candidates, nil
+}
+
+// ChooseHeuristicPlacement selects the highest-scoring deterministic candidate.
+// Ties prefer fewer controller inputs, then lower raw rotation and column for a
+// stable deterministic result.
+func ChooseHeuristicPlacement(obs Observation) (Simulation, error) {
+	candidates, err := LegalSimulations(obs)
+	if err != nil {
+		return Simulation{}, err
+	}
+	best := candidates[0]
+	for _, candidate := range candidates[1:] {
+		if betterSimulation(obs, candidate, best) {
+			best = candidate
+		}
 	}
 	return best, nil
 }
