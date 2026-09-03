@@ -22,10 +22,37 @@ The transport sends:
 - one system message
 - one user message
 - `temperature: 0`
+- a bounded `max_tokens` completion budget
+- optionally `chat_template_kwargs.enable_thinking` for servers that support Qwen/vLLM-style thinking control
 
 It reads `choices[0].message.content` and returns that text to the Tetris planner. No provider SDK is required.
 
 GamePilot does not currently require provider-side Structured Outputs. That is deliberate: local OpenAI-compatible servers differ in which response-format extensions they support. Instead, the Tetris profile strictly validates the returned text itself.
+
+## Fast thinking control
+
+GamePilot is a control loop, not a long-form reasoning workload. The model only needs to choose two integers from a deterministic legal candidate list, so the CLI defaults to:
+
+```text
+-llm-thinking off
+-llm-max-tokens 64
+```
+
+For Qwen3 served through vLLM-compatible chat templates, `off` sends:
+
+```json
+{"chat_template_kwargs":{"enable_thinking":false}}
+```
+
+This is the Qwen/vLLM hard switch for non-thinking mode and can substantially reduce per-move latency for reasoning-capable models.
+
+Thinking modes:
+
+- `off` (default): send `enable_thinking=false`
+- `on`: send `enable_thinking=true`
+- `auto`: omit the provider-specific field and let the server/model default decide
+
+Use `auto` if a nominally OpenAI-compatible server rejects `chat_template_kwargs`. `-llm-max-tokens` can also be raised if a particular model needs more output budget, but normal GamePilot responses should fit comfortably inside the default.
 
 ## Model input
 
@@ -73,6 +100,8 @@ Flags:
 -llm-model MODEL
 -llm-api-key-env ENV_NAME
 -llm-timeout 60s
+-llm-thinking off|auto|on
+-llm-max-tokens 64
 -replay-out FILE
 ```
 
@@ -97,16 +126,19 @@ go run ./cmd/gamepilot \
   -rom ./roms/tetris.gb \
   -planner llm \
   -pieces 3 \
-  -llm-base-url http://localhost:1234/v1 \
+  -llm-base-url http://localhost:8002/v1 \
   -llm-model '<model-id>' \
   -llm-api-key-env '' \
+  -llm-thinking off \
   -replay-out llm-3.json
 ```
 
-A successful move log looks like:
+Because `off` and `64` are the defaults, the `-llm-thinking` and `-llm-max-tokens` flags can normally be omitted.
+
+A successful startup line includes the effective latency controls:
 
 ```text
-Move 1: piece=T rotation=2 target_column=0 model=<model-id> attempts=1
+LLM: model=<model-id> base_url=http://localhost:8002/v1 thinking=off max_tokens=64
 ```
 
 If the model returns malformed or illegal output but fixes it on retry, `attempts` will be greater than 1.
@@ -122,8 +154,11 @@ go run ./cmd/gamepilot \
   -rom ./roms/tetris.gb \
   -planner llm \
   -pieces 3 \
+  -llm-thinking auto \
   -replay-out llm-3.json
 ```
+
+`auto` is the safest choice for a hosted provider that may not implement the Qwen/vLLM-specific chat-template extension.
 
 Do not commit API keys or ROM files.
 
