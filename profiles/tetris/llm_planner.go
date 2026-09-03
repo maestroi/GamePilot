@@ -25,7 +25,7 @@ type LLMDecision struct {
 }
 
 const llmSystemPrompt = `You are GamePilot's Game Boy Tetris placement planner.
-This is a low-latency control task. Do not reason out loud or produce a chain of thought. /no_think
+This is a low-latency control task. Return the answer immediately and do not include reasoning in the response.
 Choose exactly one placement from the legal candidates supplied by the user.
 Return ONLY a JSON object with exactly these integer fields: "rotation" and "target_column".
 Do not use markdown, code fences, commentary, or additional fields.
