@@ -32,13 +32,13 @@ type BenchmarkPiece struct {
 // sequence from a validated replay. Every benchmarked planner sees this same
 // sequence, avoiding live-ROM RNG/timing differences between planner policies.
 type BenchmarkScenario struct {
-	Hash         string                           `json:"hash"`
-	InitialBoard [BoardRows][BoardColumns]Cell   `json:"initial_board"`
-	InitialLines int                              `json:"initial_lines"`
-	InitialLevel int                              `json:"initial_level"`
-	InitialScore int                              `json:"initial_score"`
-	Pieces       []BenchmarkPiece                 `json:"pieces"`
-	Moves        int                              `json:"moves"`
+	Hash         string                         `json:"hash"`
+	InitialBoard [BoardRows][BoardColumns]Cell `json:"initial_board"`
+	InitialLines int                            `json:"initial_lines"`
+	InitialLevel int                            `json:"initial_level"`
+	InitialScore int                            `json:"initial_score"`
+	Pieces       []BenchmarkPiece               `json:"pieces"`
+	Moves        int                            `json:"moves"`
 }
 
 type BenchmarkConfig struct {
@@ -49,21 +49,22 @@ type BenchmarkConfig struct {
 }
 
 type BenchmarkResult struct {
-	Planner             BenchmarkPlanner                  `json:"planner"`
-	Pieces              int                               `json:"pieces"`
-	LinesCleared        int                               `json:"lines_cleared"`
-	TopOut              bool                              `json:"top_out"`
-	AggregateHeight     int                               `json:"aggregate_height"`
-	Holes               int                               `json:"holes"`
-	Bumpiness           int                               `json:"bumpiness"`
-	PlanNanoseconds     int64                             `json:"plan_nanoseconds"`
-	MaxPlanNanoseconds  int64                             `json:"max_plan_nanoseconds"`
-	LLMAttempts         int                               `json:"llm_attempts,omitempty"`
-	LLMRetries          int                               `json:"llm_retries,omitempty"`
-	CandidatesShown     int                               `json:"candidates_shown,omitempty"`
-	TotalCandidates     int                               `json:"total_candidates,omitempty"`
-	Placements          []Placement                       `json:"placements"`
-	FinalBoard          [BoardRows][BoardColumns]Cell    `json:"final_board"`
+	Planner            BenchmarkPlanner                 `json:"planner"`
+	Pieces             int                              `json:"pieces"`
+	LinesCleared       int                              `json:"lines_cleared"`
+	TopOut             bool                             `json:"top_out"`
+	AggregateHeight    int                              `json:"aggregate_height"`
+	Holes              int                              `json:"holes"`
+	Bumpiness          int                              `json:"bumpiness"`
+	PlanCalls          int                              `json:"plan_calls"`
+	PlanNanoseconds    int64                            `json:"plan_nanoseconds"`
+	MaxPlanNanoseconds int64                            `json:"max_plan_nanoseconds"`
+	LLMAttempts        int                              `json:"llm_attempts,omitempty"`
+	LLMRetries         int                              `json:"llm_retries,omitempty"`
+	CandidatesShown    int                              `json:"candidates_shown,omitempty"`
+	TotalCandidates    int                              `json:"total_candidates,omitempty"`
+	Placements         []Placement                      `json:"placements"`
+	FinalBoard         [BoardRows][BoardColumns]Cell   `json:"final_board"`
 }
 
 type BenchmarkReport struct {
@@ -135,13 +136,13 @@ func benchmarkPiece(piece Piece) BenchmarkPiece {
 
 func benchmarkScenarioHash(scenario BenchmarkScenario) string {
 	payload, err := json.Marshal(struct {
-		Version      int                              `json:"version"`
-		InitialBoard [BoardRows][BoardColumns]Cell    `json:"initial_board"`
-		InitialLines int                              `json:"initial_lines"`
-		InitialLevel int                              `json:"initial_level"`
-		InitialScore int                              `json:"initial_score"`
-		Pieces       []BenchmarkPiece                 `json:"pieces"`
-		Moves        int                              `json:"moves"`
+		Version      int                           `json:"version"`
+		InitialBoard [BoardRows][BoardColumns]Cell `json:"initial_board"`
+		InitialLines int                           `json:"initial_lines"`
+		InitialLevel int                           `json:"initial_level"`
+		InitialScore int                           `json:"initial_score"`
+		Pieces       []BenchmarkPiece              `json:"pieces"`
+		Moves        int                           `json:"moves"`
 	}{
 		Version:      BenchmarkFormatVersion,
 		InitialBoard: scenario.InitialBoard,
@@ -241,6 +242,7 @@ func benchmarkPlanner(ctx context.Context, scenario BenchmarkScenario, planner B
 		started := time.Now()
 		placement, attempts, shown, total, err := benchmarkPlacement(ctx, planner, config, obs)
 		elapsed := time.Since(started)
+		result.PlanCalls++
 		result.PlanNanoseconds += elapsed.Nanoseconds()
 		if elapsed.Nanoseconds() > result.MaxPlanNanoseconds {
 			result.MaxPlanNanoseconds = elapsed.Nanoseconds()
