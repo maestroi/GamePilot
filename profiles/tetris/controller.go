@@ -8,9 +8,11 @@ import (
 )
 
 const (
-	// For the Rev 1 renderer, anchor X 47 places matrix column 0 at playfield
-	// column 0. Each horizontal input changes anchor X by exactly 8 pixels.
-	anchorXMatrixColumnZeroAtBoardZero = 47
+	// For the Rev 1 renderer, anchor X 39 places matrix column 0 at playfield
+	// column 0. The renderer's signed -16 sprite offset is combined with the
+	// matrix X offset using ADC, so the carry from anchor+offset contributes one
+	// pixel before collision lookup. Each horizontal input changes anchor X by 8.
+	anchorXMatrixColumnZeroAtBoardZero = 39
 	cellPixels                          = 8
 	maxPlacementFrames                  = 2000
 )
