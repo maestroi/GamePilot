@@ -1,1 +1,10 @@
+# Copyrighted or local emulator inputs/state
 roms/
+*.gb
+*.gbc
+*.sav
+*.state
+
+# Local binaries / output
+/gamepilot
+*.log
