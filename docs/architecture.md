@@ -16,49 +16,28 @@ Replay = planner-independent reproducibility record
 ```text
 GamePilot
 ├── emulator/session   thin lifetime/checkpoint wrapper around pkg/gomeboy
-├── planner/openai     generic OpenAI-compatible chat-completions transport
+├── planner/openai     minimal OpenAI-compatible chat-completions transport
 ├── profiles           minimal profile-selection boundary
-├── profiles/tetris    Tetris-specific addresses, semantics, simulation, planners, controller, and replay state
+├── profiles/tetris    Tetris-specific addresses, semantics, planning, controller, and replay state
 └── cmd/gamepilot      runnable CLI
 ```
 
 The session package does not recreate emulation primitives. Profiles and controllers use Gomeboy's public `StepFrame`/`StepFrames`, `Press`/`Release`, `Peek8`/`PeekInto`, `FrameCount`, `SaveState`/`LoadState`, cartridge metadata, and ROM SHA-256 directly.
 
-The OpenAI-compatible transport is deliberately generic: it knows how to send system/user text to `/chat/completions` and retrieve the returned text, but it does not know about Tetris, boards, pieces, or placements. Tetris owns prompt construction and action validation.
+## Deterministic loop
 
-## Planner boundary
-
-Both current planners consume the same decoded observation and produce the same game-level action:
-
-```text
-structured Observation
-        ↓
-LegalSimulations (deterministic)
-        ↓
-   ┌───────────────┬────────────────────┐
-   │ heuristic     │ external LLM       │
-   │ scores locally│ chooses candidate  │
-   └───────────────┴────────────────────┘
-        ↓
-Placement{rotation, target_column}
-        ↓
-strict controller
-        ↓
-next Observation
-```
-
-The external model is not trusted with emulator timing or arbitrary inputs. Before the model is called, the profile enumerates the deterministic non-top-out candidate set. The model receives the current state plus candidate simulation metrics and must return one candidate as JSON. GamePilot rejects malformed JSON, unknown fields, invalid rotations, or placements outside that set before the controller sees anything.
-
-This means local and hosted models are strategic plug-ins, not emulator drivers.
-
-## Replay boundary
+The first Tetris implementation now has a complete planner-to-replay loop:
 
 ```text
 ROM + deterministic startup
         ↓
 structured Observation
         ↓
-planner chooses Placement
+deterministic legal simulations
+        ↓
+heuristic planner OR LLM planner
+        ↓
+validated Placement
         ↓
 strict controller executes inputs
         ↓
@@ -69,7 +48,9 @@ canonical state hash + replay record
 
 A replay contains game-level placements and decoded state, not emulator-internal input timing or opaque save-state bytes. Verification starts from the same deterministic startup, re-executes each recorded placement through the normal controller, and compares both canonical state hashes and frame counts after every boundary.
 
-Replay is planner-independent: an LLM-driven run can be verified later without contacting the model again.
+This preserves the most important planner boundary: heuristic, LLM, or future planners only produce `Placement{Rotation, TargetColumn}`. They do not own frame timing, collision assumptions, lock detection, or replay execution.
+
+The external-model transport is also deliberately small. `planner/openai` owns only the OpenAI-compatible HTTP wire shape. Tetris owns its prompt, legal candidate generation, output schema validation, and retries. Fast control-loop defaults disable Qwen/vLLM-style thinking and bound response tokens, while `auto` mode can omit provider-specific thinking fields.
 
 ## Vertical slices
 
@@ -79,12 +60,12 @@ Completed:
 2. Lock/new-piece boundary detection.
 3. Deterministic heuristic planner and repeated observation -> decision -> action loop.
 4. Versioned high-level replay records with canonical state hashes and fresh-boot verification.
-5. OpenAI-compatible LLM planner behind the same action boundary, with strict JSON/legal-action validation and configurable base URL/model/API-key environment variable.
+5. OpenAI-compatible/local LLM planner behind the same placement boundary, with strict JSON/legal-action validation and replay recording.
 
 Next:
 
-6. Exercise local/hosted model behavior and use replay files to compare model choices against the heuristic baseline.
-7. Consider deeper lookahead/search or richer candidate summaries if one-piece LLM decisions are not strong enough.
+6. Add replay fixtures/integration checks around real-ROM/model runs when an appropriate local test harness is available without committing copyrighted ROM data.
+7. Evaluate prompt/candidate compression, next-piece lookahead, and latency/quality tradeoffs for model planning.
 8. Consider a thin MCP surface only after the planner interfaces are stable.
 
-Future games are expected to own different observation models; the generic runtime should not absorb Tetris board geometry, piece IDs, RAM addresses, prompt semantics, or replay-state hashing rules.
+Future games are expected to own different observation models; the generic runtime should not absorb Tetris board geometry, piece IDs, RAM addresses, or replay-state hashing rules.
