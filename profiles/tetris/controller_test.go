@@ -56,11 +56,35 @@ func TestExecutePlacementMovesAndWaitsForNextPiece(t *testing.T) {
 	if bPresses != 1 {
 		t.Fatalf("B presses = %d, want 1", bPresses)
 	}
-	if rightPresses != 3 {
-		t.Fatalf("right presses = %d, want 3", rightPresses)
+	if rightPresses != 2 {
+		t.Fatalf("right presses = %d, want 2", rightPresses)
 	}
 	if downPresses != 1 {
 		t.Fatalf("down presses = %d, want 1", downPresses)
+	}
+}
+
+func TestExecutePlacementFarRightOStopsAtROMWallAnchor(t *testing.T) {
+	emu := newControllerFake()
+	emu.mem[activePieceAddr] = 0x0C // O, rotation 0
+	emu.maxAnchorX = 95             // Rev 1 far-right reachable anchor for this placement.
+
+	_, err := ExecutePlacement(context.Background(), emu, Placement{
+		Rotation:     0,
+		TargetColumn: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rightPresses := 0
+	for _, button := range emu.pressLog {
+		if button == gomeboy.ButtonRight {
+			rightPresses++
+		}
+	}
+	if rightPresses != 4 {
+		t.Fatalf("right presses = %d, want 4", rightPresses)
 	}
 }
 
@@ -96,12 +120,16 @@ type controllerFake struct {
 	pressed       map[gomeboy.Button]bool
 	pressLog      []gomeboy.Button
 	blockRight    bool
+	maxAnchorX    byte
 	downFrames    int
 	lockCountdown int
 }
 
 func newControllerFake() *controllerFake {
-	f := &controllerFake{pressed: make(map[gomeboy.Button]bool)}
+	f := &controllerFake{
+		pressed:    make(map[gomeboy.Button]bool),
+		maxAnchorX: 0xFF,
+	}
 	for row := 0; row < BoardRows; row++ {
 		for col := 0; col < BoardColumns; col++ {
 			f.mem[int(playfieldBase)+row*int(playfieldStride)+col] = emptyTile
@@ -163,7 +191,7 @@ func (f *controllerFake) StepFrame() {
 	if f.pressed[gomeboy.ButtonLeft] {
 		f.mem[activeXAddr] -= 8
 	}
-	if f.pressed[gomeboy.ButtonRight] && !f.blockRight {
+	if f.pressed[gomeboy.ButtonRight] && !f.blockRight && f.mem[activeXAddr] < f.maxAnchorX {
 		f.mem[activeXAddr] += 8
 	}
 	if f.pressed[gomeboy.ButtonDown] {
