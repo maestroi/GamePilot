@@ -1,9 +1,9 @@
 package tetris
 
 import (
+	"errors"
 	"fmt"
 	"sort"
-	"strings"
 )
 
 const (
@@ -81,7 +81,7 @@ func LookaheadSimulations(obs Observation) ([]LookaheadSimulation, error) {
 
 		replies, replyErr := LegalSimulations(replyObs)
 		if replyErr != nil {
-			if !strings.Contains(replyErr.Error(), "no non-top-out placement") {
+			if !errors.Is(replyErr, ErrNoPlacement) {
 				return nil, replyErr
 			}
 			results = append(results, LookaheadSimulation{
