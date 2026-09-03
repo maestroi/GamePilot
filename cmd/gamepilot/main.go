@@ -33,6 +33,8 @@ func run() error {
 	llmModel := flag.String("llm-model", os.Getenv("OPENAI_MODEL"), "model name for -planner llm")
 	llmAPIKeyEnv := flag.String("llm-api-key-env", "OPENAI_API_KEY", "environment variable containing the API key; use an empty value for keyless local servers")
 	llmTimeout := flag.Duration("llm-timeout", 60*time.Second, "HTTP timeout for each LLM request")
+	llmThinking := flag.String("llm-thinking", "off", "thinking mode for compatible servers: off, auto, or on")
+	llmMaxTokens := flag.Int("llm-max-tokens", 64, "maximum completion tokens per LLM placement request")
 	flag.Parse()
 
 	if *romPath == "" {
@@ -49,6 +51,12 @@ func run() error {
 	}
 	if *planner == "llm" && *llmBaseURL == "" {
 		return fmt.Errorf("-llm-base-url is required for -planner llm (or set OPENAI_BASE_URL)")
+	}
+	if *planner == "llm" && *llmThinking != "off" && *llmThinking != "auto" && *llmThinking != "on" {
+		return fmt.Errorf("-llm-thinking must be off, auto, or on")
+	}
+	if *planner == "llm" && *llmMaxTokens < 1 {
+		return fmt.Errorf("-llm-max-tokens must be at least 1")
 	}
 	if *planner == "replay" && *replayIn == "" {
 		return fmt.Errorf("-replay-in is required for -planner replay")
@@ -142,7 +150,18 @@ func run() error {
 		}
 		client := openaiplanner.NewClient(*llmBaseURL, *llmModel, apiKey)
 		client.HTTPClient.Timeout = *llmTimeout
-		fmt.Printf("LLM: model=%s base_url=%s\n", *llmModel, *llmBaseURL)
+		client.MaxTokens = *llmMaxTokens
+		switch *llmThinking {
+		case "off":
+			thinking := false
+			client.Thinking = &thinking
+		case "on":
+			thinking := true
+			client.Thinking = &thinking
+		case "auto":
+			client.Thinking = nil
+		}
+		fmt.Printf("LLM: model=%s base_url=%s thinking=%s max_tokens=%d\n", *llmModel, *llmBaseURL, *llmThinking, *llmMaxTokens)
 		obs = initial
 		for move := 1; move <= *pieces && !obs.GameOver; move++ {
 			before := obs
