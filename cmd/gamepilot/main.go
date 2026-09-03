@@ -7,8 +7,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/maestroi/GamePilot/emulator/session"
+	openaiplanner "github.com/maestroi/GamePilot/planner/openai"
 	"github.com/maestroi/GamePilot/profiles/tetris"
 )
 
@@ -21,22 +23,32 @@ func main() {
 
 func run() error {
 	romPath := flag.String("rom", "", "path to the supported Tetris Rev 1 ROM")
-	planner := flag.String("planner", "observe", "mode: observe, place, heuristic, or replay")
+	planner := flag.String("planner", "observe", "mode: observe, place, heuristic, llm, or replay")
 	rotation := flag.Int("rotation", 0, "raw Tetris rotation 0..3 for -planner place")
 	column := flag.Int("column", 0, "leftmost occupied board column for -planner place")
-	pieces := flag.Int("pieces", 25, "number of placements to execute for -planner heuristic")
-	replayOut := flag.String("replay-out", "", "write a deterministic replay JSON file for place or heuristic mode")
+	pieces := flag.Int("pieces", 25, "number of placements to execute for -planner heuristic or llm")
+	replayOut := flag.String("replay-out", "", "write a deterministic replay JSON file for place, heuristic, or llm mode")
 	replayIn := flag.String("replay-in", "", "replay JSON file to verify with -planner replay")
+	llmBaseURL := flag.String("llm-base-url", envOr("OPENAI_BASE_URL", "http://localhost:1234/v1"), "OpenAI-compatible base URL, normally ending in /v1")
+	llmModel := flag.String("llm-model", os.Getenv("OPENAI_MODEL"), "model name for -planner llm")
+	llmAPIKeyEnv := flag.String("llm-api-key-env", "OPENAI_API_KEY", "environment variable containing the API key; use an empty value for keyless local servers")
+	llmTimeout := flag.Duration("llm-timeout", 60*time.Second, "HTTP timeout for each LLM request")
 	flag.Parse()
 
 	if *romPath == "" {
 		return errors.New("-rom is required")
 	}
-	if *planner != "observe" && *planner != "place" && *planner != "heuristic" && *planner != "replay" {
-		return fmt.Errorf("planner %q is not implemented; use -planner observe, place, heuristic, or replay", *planner)
+	if *planner != "observe" && *planner != "place" && *planner != "heuristic" && *planner != "llm" && *planner != "replay" {
+		return fmt.Errorf("planner %q is not implemented; use -planner observe, place, heuristic, llm, or replay", *planner)
 	}
-	if *planner == "heuristic" && *pieces < 1 {
-		return fmt.Errorf("-pieces must be at least 1 for -planner heuristic")
+	if (*planner == "heuristic" || *planner == "llm") && *pieces < 1 {
+		return fmt.Errorf("-pieces must be at least 1 for -planner %s", *planner)
+	}
+	if *planner == "llm" && *llmModel == "" {
+		return fmt.Errorf("-llm-model is required for -planner llm (or set OPENAI_MODEL)")
+	}
+	if *planner == "llm" && *llmBaseURL == "" {
+		return fmt.Errorf("-llm-base-url is required for -planner llm (or set OPENAI_BASE_URL)")
 	}
 	if *planner == "replay" && *replayIn == "" {
 		return fmt.Errorf("-replay-in is required for -planner replay")
@@ -44,8 +56,8 @@ func run() error {
 	if *planner != "replay" && *replayIn != "" {
 		return fmt.Errorf("-replay-in is only valid with -planner replay")
 	}
-	if *replayOut != "" && *planner != "place" && *planner != "heuristic" {
-		return fmt.Errorf("-replay-out is only valid with -planner place or -planner heuristic")
+	if *replayOut != "" && *planner != "place" && *planner != "heuristic" && *planner != "llm" {
+		return fmt.Errorf("-replay-out is only valid with -planner place, -planner heuristic, or -planner llm")
 	}
 
 	sess, err := session.OpenROM(*romPath)
@@ -123,6 +135,40 @@ func run() error {
 				}
 			}
 		}
+	case "llm":
+		apiKey := ""
+		if *llmAPIKeyEnv != "" {
+			apiKey = os.Getenv(*llmAPIKeyEnv)
+		}
+		client := openaiplanner.NewClient(*llmBaseURL, *llmModel, apiKey)
+		client.HTTPClient.Timeout = *llmTimeout
+		fmt.Printf("LLM: model=%s base_url=%s\n", *llmModel, *llmBaseURL)
+		obs = initial
+		for move := 1; move <= *pieces && !obs.GameOver; move++ {
+			before := obs
+			decision, planErr := tetris.ChooseLLMPlacement(ctx, client, before)
+			if planErr != nil {
+				return fmt.Errorf("llm move %d: %w", move, planErr)
+			}
+			fmt.Printf(
+				"Move %d: piece=%s rotation=%d target_column=%d model=%s attempts=%d\n",
+				move,
+				before.CurrentPiece.Kind,
+				decision.Placement.Rotation,
+				decision.Placement.TargetColumn,
+				*llmModel,
+				decision.Attempts,
+			)
+			obs, err = tetris.ExecutePlacement(ctx, sess.Emulator(), decision.Placement)
+			if err != nil {
+				return fmt.Errorf("llm move %d execute: %w", move, err)
+			}
+			if record != nil {
+				if err := record.Append(before, decision.Placement, obs); err != nil {
+					return fmt.Errorf("llm move %d record: %w", move, err)
+				}
+			}
+		}
 	case "replay":
 		replay, readErr := readReplayFile(*replayIn)
 		if readErr != nil {
@@ -178,4 +224,11 @@ func writeReplayFile(path string, replay tetris.Replay) error {
 		return fmt.Errorf("close replay %q: %w", path, err)
 	}
 	return nil
+}
+
+func envOr(name, fallback string) string {
+	if value := os.Getenv(name); value != "" {
+		return value
+	}
+	return fallback
 }
