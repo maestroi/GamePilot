@@ -6,7 +6,10 @@ import (
 	"math"
 )
 
-var ErrPlacementTopOut = errors.New("tetris: placement tops out")
+var (
+	ErrPlacementTopOut = errors.New("tetris: placement tops out")
+	ErrNoPlacement     = errors.New("tetris: no non-top-out placement")
+)
 
 // HeuristicWeights keeps the first planner deliberately small and inspectable.
 // These weights reward line clears while penalizing tall, holey, jagged boards.
@@ -155,7 +158,7 @@ func LegalSimulations(obs Observation) ([]Simulation, error) {
 		}
 	}
 	if len(candidates) == 0 {
-		return nil, fmt.Errorf("tetris: no non-top-out placement for %s", obs.CurrentPiece.Kind)
+		return nil, fmt.Errorf("%w for %s", ErrNoPlacement, obs.CurrentPiece.Kind)
 	}
 	return candidates, nil
 }
