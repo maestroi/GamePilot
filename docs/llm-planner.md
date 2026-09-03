@@ -44,7 +44,7 @@ For Qwen3 served through vLLM-compatible chat templates, `off` sends:
 {"chat_template_kwargs":{"enable_thinking":false}}
 ```
 
-This is the Qwen/vLLM hard switch for non-thinking mode and can substantially reduce per-move latency for reasoning-capable models.
+Qwen documents this as its hard switch for non-thinking mode, and vLLM exposes the same request-level chat-template override. This can substantially reduce per-move latency for reasoning-capable models.
 
 Thinking modes:
 
@@ -53,6 +53,8 @@ Thinking modes:
 - `auto`: omit the provider-specific field and let the server/model default decide
 
 Use `auto` if a nominally OpenAI-compatible server rejects `chat_template_kwargs`. `-llm-max-tokens` can also be raised if a particular model needs more output budget, but normal GamePilot responses should fit comfortably inside the default.
+
+The Tetris system prompt also asks for an immediate JSON answer without exposing reasoning, but it deliberately does not embed Qwen's `/no_think` soft switch. That keeps an explicit `-llm-thinking on` meaningful; thinking control remains a transport/request concern rather than a game-prompt side effect.
 
 ## Model input
 
