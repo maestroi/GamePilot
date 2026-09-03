@@ -31,18 +31,47 @@ func TestCompleteJSONUsesOpenAICompatibleChatCompletions(t *testing.T) {
 		if len(request.Messages) != 2 || request.Messages[0].Role != "system" || request.Messages[1].Role != "user" {
 			t.Fatalf("messages = %+v", request.Messages)
 		}
+		if request.MaxTokens != 64 {
+			t.Fatalf("max_tokens = %d, want 64", request.MaxTokens)
+		}
+		if got, ok := request.ChatTemplateKwargs["enable_thinking"].(bool); !ok || got {
+			t.Fatalf("chat_template_kwargs.enable_thinking = %#v, want false", request.ChatTemplateKwargs["enable_thinking"])
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"rotation\":1,\"target_column\":6}"}}]}`))
 	}))
 	defer server.Close()
 
 	client := NewClient(server.URL+"/v1", "test-model", "secret")
+	thinking := false
+	client.Thinking = &thinking
+	client.MaxTokens = 64
 	got, err := client.CompleteJSON(context.Background(), "system", "user")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got != `{"rotation":1,"target_column":6}` {
 		t.Fatalf("content = %q", got)
+	}
+}
+
+func TestCompleteJSONAutoThinkingOmitsProviderSpecificKwargs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request chatRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		if request.ChatTemplateKwargs != nil {
+			t.Fatalf("chat_template_kwargs = %#v, want omitted", request.ChatTemplateKwargs)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"rotation\":0,\"target_column\":0}"}}]}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL+"/v1", "test-model", "")
+	if _, err := client.CompleteJSON(context.Background(), "system", "user"); err != nil {
+		t.Fatal(err)
 	}
 }
 
