@@ -21,14 +21,16 @@ func main() {
 
 func run() error {
 	romPath := flag.String("rom", "", "path to the supported Tetris Rev 1 ROM")
-	planner := flag.String("planner", "observe", "planner mode (first slice: observe)")
+	planner := flag.String("planner", "observe", "mode: observe or place")
+	rotation := flag.Int("rotation", 0, "raw Tetris rotation 0..3 for -planner place")
+	column := flag.Int("column", 0, "leftmost occupied board column for -planner place")
 	flag.Parse()
 
 	if *romPath == "" {
 		return errors.New("-rom is required")
 	}
-	if *planner != "observe" {
-		return fmt.Errorf("planner %q is not implemented in the first observation slice; use -planner observe", *planner)
+	if *planner != "observe" && *planner != "place" {
+		return fmt.Errorf("planner %q is not implemented; use -planner observe or -planner place", *planner)
 	}
 
 	sess, err := session.OpenROM(*romPath)
@@ -47,16 +49,26 @@ func run() error {
 	fmt.Printf("ROM: %s\n", cart.Title)
 	fmt.Printf("ROM SHA-256: %s\n", hash)
 	fmt.Printf("Profile: %s\n", profile.ID())
-	fmt.Printf("Planner: %s\n\n", *planner)
+	fmt.Printf("Planner: %s\n", *planner)
 
-	if err := tetris.StartTypeAZero(context.Background(), sess.Emulator()); err != nil {
+	ctx := context.Background()
+	if err := tetris.StartTypeAZero(ctx, sess.Emulator()); err != nil {
 		return err
 	}
 
-	obs, err := tetris.Observe(sess.Emulator())
+	var obs tetris.Observation
+	switch *planner {
+	case "observe":
+		obs, err = tetris.Observe(sess.Emulator())
+	case "place":
+		placement := tetris.Placement{Rotation: *rotation, TargetColumn: *column}
+		fmt.Printf("Placement: rotation=%d target_column=%d\n", placement.Rotation, placement.TargetColumn)
+		obs, err = tetris.ExecutePlacement(ctx, sess.Emulator(), placement)
+	}
 	if err != nil {
 		return err
 	}
+	fmt.Println()
 
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetIndent("", "  ")
