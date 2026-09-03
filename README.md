@@ -36,6 +36,7 @@ Implemented now:
 - a one-piece heuristic over aggregate height, completed lines, holes, and bumpiness
 - repeated heuristic placement execution with a configurable move limit
 - an OpenAI-compatible `/v1/chat/completions` client with configurable base URL/model/API-key environment variable
+- fast LLM defaults for game control: Qwen/vLLM-style thinking disabled and a 64-token completion cap
 - an LLM planner that sees the board, current/next pieces, score/lines/level, and deterministic legal candidate metrics
 - strict model-output decoding: exactly `rotation` and `target_column`, checked against the legal candidate set before execution
 - up to three retries for malformed or illegal model output
@@ -78,20 +79,30 @@ go run ./cmd/gamepilot \
 
 The default LLM base URL is `http://localhost:1234/v1`, which is convenient for a local OpenAI-compatible server. Supply the model identifier exposed by your server. Keyless local servers can disable the API-key environment lookup with `-llm-api-key-env ""`.
 
+GamePilot defaults to `-llm-thinking off` and `-llm-max-tokens 64`. For Qwen3/vLLM-style endpoints, non-thinking mode sends `chat_template_kwargs.enable_thinking=false`, which is much better suited to the low-latency `Observation -> Placement` loop than long reasoning traces.
+
 ```bash
 go run ./cmd/gamepilot \
   -rom ./roms/tetris.gb \
   -planner llm \
   -pieces 5 \
-  -llm-base-url http://localhost:1234/v1 \
+  -llm-base-url http://localhost:8002/v1 \
   -llm-model '<model-id>' \
   -llm-api-key-env '' \
   -replay-out llm-5.json
 ```
 
+The startup line prints the effective settings, for example:
+
+```text
+LLM: model=<model-id> base_url=http://localhost:8002/v1 thinking=off max_tokens=64
+```
+
+If a compatible server rejects the provider-specific thinking field, use `-llm-thinking auto` to omit it. `-llm-thinking on` explicitly enables it.
+
 For another local server, change only the compatible base URL and model. For example, an OpenAI-compatible server on port `11434` can use `http://localhost:11434/v1`.
 
-For a hosted compatible API, set the normal environment variables instead of putting secrets on the command line:
+For a hosted compatible API, set the normal environment variables instead of putting secrets on the command line. `-llm-thinking auto` is safest when the provider does not implement Qwen/vLLM chat-template extensions:
 
 ```bash
 export OPENAI_BASE_URL='https://api.openai.com/v1'
@@ -102,6 +113,7 @@ go run ./cmd/gamepilot \
   -rom ./roms/tetris.gb \
   -planner llm \
   -pieces 5 \
+  -llm-thinking auto \
   -replay-out llm-5.json
 ```
 
