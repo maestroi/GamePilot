@@ -19,6 +19,14 @@ type Client struct {
 	Model      string
 	APIKey     string
 	HTTPClient *http.Client
+
+	// Thinking controls Qwen/vLLM-style chat-template thinking. Nil omits the
+	// provider-specific field entirely; false requests fast non-thinking mode;
+	// true explicitly enables thinking.
+	Thinking *bool
+
+	// MaxTokens bounds the tiny placement response. Zero omits the field.
+	MaxTokens int
 }
 
 type chatMessage struct {
@@ -27,9 +35,11 @@ type chatMessage struct {
 }
 
 type chatRequest struct {
-	Model       string        `json:"model"`
-	Messages    []chatMessage `json:"messages"`
-	Temperature float64       `json:"temperature"`
+	Model              string         `json:"model"`
+	Messages           []chatMessage  `json:"messages"`
+	Temperature        float64        `json:"temperature"`
+	MaxTokens          int            `json:"max_tokens,omitempty"`
+	ChatTemplateKwargs map[string]any `json:"chat_template_kwargs,omitempty"`
 }
 
 type chatResponse struct {
@@ -70,15 +80,24 @@ func (c *Client) CompleteJSON(ctx context.Context, systemPrompt, userPrompt stri
 	if c.Model == "" {
 		return "", fmt.Errorf("openai-compatible model is required")
 	}
+	if c.MaxTokens < 0 {
+		return "", fmt.Errorf("openai-compatible max tokens cannot be negative")
+	}
 
-	body, err := json.Marshal(chatRequest{
+	request := chatRequest{
 		Model: c.Model,
 		Messages: []chatMessage{
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: userPrompt},
 		},
 		Temperature: 0,
-	})
+		MaxTokens:   c.MaxTokens,
+	}
+	if c.Thinking != nil {
+		request.ChatTemplateKwargs = map[string]any{"enable_thinking": *c.Thinking}
+	}
+
+	body, err := json.Marshal(request)
 	if err != nil {
 		return "", fmt.Errorf("marshal chat completion request: %w", err)
 	}
