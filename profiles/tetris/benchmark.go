@@ -49,22 +49,22 @@ type BenchmarkConfig struct {
 }
 
 type BenchmarkResult struct {
-	Planner            BenchmarkPlanner                 `json:"planner"`
-	Pieces             int                              `json:"pieces"`
-	LinesCleared       int                              `json:"lines_cleared"`
-	TopOut             bool                             `json:"top_out"`
-	AggregateHeight    int                              `json:"aggregate_height"`
-	Holes              int                              `json:"holes"`
-	Bumpiness          int                              `json:"bumpiness"`
-	PlanCalls          int                              `json:"plan_calls"`
-	PlanNanoseconds    int64                            `json:"plan_nanoseconds"`
-	MaxPlanNanoseconds int64                            `json:"max_plan_nanoseconds"`
-	LLMAttempts        int                              `json:"llm_attempts,omitempty"`
-	LLMRetries         int                              `json:"llm_retries,omitempty"`
-	CandidatesShown    int                              `json:"candidates_shown,omitempty"`
-	TotalCandidates    int                              `json:"total_candidates,omitempty"`
-	Placements         []Placement                      `json:"placements"`
-	FinalBoard         [BoardRows][BoardColumns]Cell   `json:"final_board"`
+	Planner            BenchmarkPlanner                `json:"planner"`
+	Pieces             int                             `json:"pieces"`
+	LinesCleared       int                             `json:"lines_cleared"`
+	TopOut             bool                            `json:"top_out"`
+	AggregateHeight    int                             `json:"aggregate_height"`
+	Holes              int                             `json:"holes"`
+	Bumpiness          int                             `json:"bumpiness"`
+	PlanCalls          int                             `json:"plan_calls"`
+	PlanNanoseconds    int64                           `json:"plan_nanoseconds"`
+	MaxPlanNanoseconds int64                           `json:"max_plan_nanoseconds"`
+	LLMAttempts        int                             `json:"llm_attempts,omitempty"`
+	LLMRetries         int                             `json:"llm_retries,omitempty"`
+	CandidatesShown    int                             `json:"candidates_shown,omitempty"`
+	TotalCandidates    int                             `json:"total_candidates,omitempty"`
+	Placements         []Placement                     `json:"placements"`
+	FinalBoard         [BoardRows][BoardColumns]Cell  `json:"final_board"`
 }
 
 type BenchmarkReport struct {
@@ -284,7 +284,7 @@ func benchmarkPlanner(ctx context.Context, scenario BenchmarkScenario, planner B
 	return result, nil
 }
 
-func benchmarkPlacement(ctx context.Context, planner BenchmarkPlanner, config BenchmarkConfig, obs Observation) (Placement, attempts, shown, total int, err error) {
+func benchmarkPlacement(ctx context.Context, planner BenchmarkPlanner, config BenchmarkConfig, obs Observation) (Placement, int, int, int, error) {
 	switch planner {
 	case BenchmarkHeuristic:
 		decision, err := ChooseHeuristicPlacement(obs)
