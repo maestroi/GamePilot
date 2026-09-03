@@ -88,8 +88,8 @@ func TestChooseHeuristicPlacementRejectsFullBoard(t *testing.T) {
 	}
 
 	_, err := ChooseHeuristicPlacement(obs)
-	if err == nil {
-		t.Fatal("expected no-placement error")
+	if !errors.Is(err, ErrNoPlacement) {
+		t.Fatalf("error = %v, want ErrNoPlacement", err)
 	}
 }
 
