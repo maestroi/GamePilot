@@ -52,7 +52,9 @@ The original Game Boy Tetris playfield for this revision is 18x10 in memory. Gam
 
 `Placement.Rotation` is the ROM's raw low-two-bit orientation index (`0..3`). `Placement.TargetColumn` is the **leftmost occupied playfield column** after that rotation. This is intentionally a game-level coordinate rather than the sprite anchor stored at `C202`.
 
-The mapping is derived from the Rev 1 renderer and collision lookup: tetromino sprite definitions use an X offset of `-16`, Game Boy OAM X coordinates have an 8-pixel bias, the playfield starts at tilemap column 2, and each matrix cell is 8 pixels wide. As a result, anchor X `47` places tetromino matrix column 0 at playfield column 0, and every left/right move changes the anchor by exactly 8 pixels.
+The mapping is derived from the Rev 1 renderer and collision lookup: tetromino sprite definitions use an X offset of `-16`, Game Boy OAM X coordinates have an 8-pixel bias, the playfield starts at tilemap column 2, and each matrix cell is 8 pixels wide. One easy-to-miss ROM detail is that the renderer adds the signed sprite offset to the anchor and then uses `ADC` for the matrix X offset. For the normal tetromino anchors this propagates the carry from `anchor + 0xF0`, adding one pixel before collision lookup. With that exact arithmetic, anchor X `39` places tetromino matrix column 0 at playfield column 0, and every left/right move changes the anchor by exactly 8 pixels.
+
+This was also calibrated against the real Rev 1 ROM: the earlier `T rotation=1 target_column=6` run settled one column too far right when the controller used anchor base `47`; the same off-by-one made an O planned for columns 8-9 attempt columns 9-10 and hit the right wall. The corrected anchor base is `39`.
 
 The controller uses the exact occupied 4x4 sprite matrices from the ROM to convert the requested leftmost occupied column into the required anchor X. This matters for orientations whose first occupied matrix column is not column 0 (for example the O piece and vertical I piece).
 
