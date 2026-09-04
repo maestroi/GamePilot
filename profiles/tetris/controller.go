@@ -32,10 +32,29 @@ type controllerEmulator interface {
 	StepFrame()
 }
 
+// PlacementFrameObserver is called after each emulator frame executed by the
+// placement controller. It may inspect/publish the supplied memory-derived
+// observation or delay before the controller continues, but must not call the
+// emulator itself. Returning an error aborts placement execution.
+type PlacementFrameObserver func(Observation) error
+
 // ExecutePlacement deterministically rotates, shifts, and soft-drops the
 // current piece, then returns after the lock pipeline has completed and the
 // next piece is ready. Every rotate/shift pulse is verified from ROM memory.
 func ExecutePlacement(ctx context.Context, emu controllerEmulator, placement Placement) (Observation, error) {
+	return executePlacement(ctx, emu, placement, nil)
+}
+
+// ExecutePlacementObserved is identical to ExecutePlacement at the emulator
+// frame/input boundary, while exposing every already-executed frame to an
+// observer. The observer is a presentation hook: it never causes extra frames
+// to be stepped and therefore can be used for live pacing/frame publication
+// without changing deterministic controller semantics.
+func ExecutePlacementObserved(ctx context.Context, emu controllerEmulator, placement Placement, observer PlacementFrameObserver) (Observation, error) {
+	return executePlacement(ctx, emu, placement, observer)
+}
+
+func executePlacement(ctx context.Context, emu controllerEmulator, placement Placement, observer PlacementFrameObserver) (Observation, error) {
 	obs, err := Observe(emu)
 	if err != nil {
 		return Observation{}, err
@@ -63,7 +82,7 @@ func ExecutePlacement(ctx context.Context, emu controllerEmulator, placement Pla
 	}
 
 	originalKind := obs.CurrentPiece.Kind
-	obs, err = rotateTo(ctx, emu, obs, placement.Rotation)
+	obs, err = rotateTo(ctx, emu, obs, placement.Rotation, observer)
 	if err != nil {
 		return Observation{}, err
 	}
@@ -73,7 +92,7 @@ func ExecutePlacement(ctx context.Context, emu controllerEmulator, placement Pla
 
 	matrixBaseColumn := placement.TargetColumn - minX
 	desiredAnchorX := anchorXMatrixColumnZeroAtBoardZero + matrixBaseColumn*cellPixels
-	obs, err = shiftToAnchorX(ctx, emu, obs, desiredAnchorX)
+	obs, err = shiftToAnchorX(ctx, emu, obs, desiredAnchorX, observer)
 	if err != nil {
 		return Observation{}, err
 	}
@@ -81,10 +100,10 @@ func ExecutePlacement(ctx context.Context, emu controllerEmulator, placement Pla
 		return Observation{}, fmt.Errorf("tetris: current piece changed while shifting")
 	}
 
-	return softDropUntilNextPiece(ctx, emu)
+	return softDropUntilNextPiece(ctx, emu, observer)
 }
 
-func rotateTo(ctx context.Context, emu controllerEmulator, obs Observation, target int) (Observation, error) {
+func rotateTo(ctx context.Context, emu controllerEmulator, obs Observation, target int, observer PlacementFrameObserver) (Observation, error) {
 	if target < 0 || target > 3 {
 		return Observation{}, fmt.Errorf("tetris: rotation %d is outside raw ROM range 0..3", target)
 	}
@@ -103,11 +122,8 @@ func rotateTo(ctx context.Context, emu controllerEmulator, obs Observation, targ
 
 	for i := 0; i < steps; i++ {
 		before := obs.CurrentPiece.Rotation
-		if err := pulseButton(ctx, emu, button); err != nil {
-			return Observation{}, err
-		}
 		var err error
-		obs, err = Observe(emu)
+		obs, err = pulseButton(ctx, emu, button, observer)
 		if err != nil {
 			return Observation{}, err
 		}
@@ -125,7 +141,7 @@ func rotateTo(ctx context.Context, emu controllerEmulator, obs Observation, targ
 	return obs, nil
 }
 
-func shiftToAnchorX(ctx context.Context, emu controllerEmulator, obs Observation, desiredAnchorX int) (Observation, error) {
+func shiftToAnchorX(ctx context.Context, emu controllerEmulator, obs Observation, desiredAnchorX int, observer PlacementFrameObserver) (Observation, error) {
 	current := int(obs.CurrentPiece.AnchorX)
 	delta := desiredAnchorX - current
 	if delta%cellPixels != 0 {
@@ -143,11 +159,8 @@ func shiftToAnchorX(ctx context.Context, emu controllerEmulator, obs Observation
 
 	for i := 0; i < moves; i++ {
 		before := int(obs.CurrentPiece.AnchorX)
-		if err := pulseButton(ctx, emu, button); err != nil {
-			return Observation{}, err
-		}
 		var err error
-		obs, err = Observe(emu)
+		obs, err = pulseButton(ctx, emu, button, observer)
 		if err != nil {
 			return Observation{}, err
 		}
@@ -165,7 +178,7 @@ func shiftToAnchorX(ctx context.Context, emu controllerEmulator, obs Observation
 	return obs, nil
 }
 
-func softDropUntilNextPiece(ctx context.Context, emu controllerEmulator) (Observation, error) {
+func softDropUntilNextPiece(ctx context.Context, emu controllerEmulator, observer PlacementFrameObserver) (Observation, error) {
 	emu.Press(gomeboy.ButtonDown)
 	downHeld := true
 	defer func() {
@@ -176,11 +189,7 @@ func softDropUntilNextPiece(ctx context.Context, emu controllerEmulator) (Observ
 
 	sawLockTransition := false
 	for i := 0; i < maxPlacementFrames; i++ {
-		if err := ctx.Err(); err != nil {
-			return Observation{}, err
-		}
-		emu.StepFrame()
-		obs, err := Observe(emu)
+		obs, err := stepFrameObserved(ctx, emu, observer)
 		if err != nil {
 			return Observation{}, err
 		}
@@ -206,16 +215,39 @@ func softDropUntilNextPiece(ctx context.Context, emu controllerEmulator) (Observ
 	return Observation{}, fmt.Errorf("tetris: placement did not reach the next ready piece within %d frames", maxPlacementFrames)
 }
 
-func pulseButton(ctx context.Context, emu controllerEmulator, button gomeboy.Button) error {
+func pulseButton(ctx context.Context, emu controllerEmulator, button gomeboy.Button, observer PlacementFrameObserver) (Observation, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return Observation{}, err
 	}
 	emu.Press(button)
-	emu.StepFrame()
+	held := true
+	defer func() {
+		if held {
+			emu.Release(button)
+		}
+	}()
+
+	if _, err := stepFrameObserved(ctx, emu, observer); err != nil {
+		return Observation{}, err
+	}
 	emu.Release(button)
+	held = false
+	return stepFrameObserved(ctx, emu, observer)
+}
+
+func stepFrameObserved(ctx context.Context, emu controllerEmulator, observer PlacementFrameObserver) (Observation, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return Observation{}, err
 	}
 	emu.StepFrame()
-	return ctx.Err()
+	obs, err := Observe(emu)
+	if err != nil {
+		return Observation{}, err
+	}
+	if observer != nil {
+		if err := observer(obs); err != nil {
+			return Observation{}, err
+		}
+	}
+	return obs, ctx.Err()
 }
