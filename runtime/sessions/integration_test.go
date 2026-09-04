@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"image/png"
 	"os"
 	"testing"
 	"time"
@@ -56,6 +57,24 @@ func TestTetrisManagerRealROM(t *testing.T) {
 	}
 	if snap.Frame == 0 || len(snap.Observation) == 0 || len(snap.Decision) == 0 {
 		t.Fatalf("terminal snapshot missing live data: frame=%d observation=%d decision=%d", snap.Frame, len(snap.Observation), len(snap.Decision))
+	}
+	if !snap.FrameAvailable || snap.FrameSequence == 0 {
+		t.Fatalf("terminal snapshot missing live frame metadata: available=%v sequence=%d", snap.FrameAvailable, snap.FrameSequence)
+	}
+
+	frame, err := manager.Frame(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if frame.ContentType != "image/png" || frame.EmulatorFrame != snap.Frame {
+		t.Fatalf("frame metadata = type=%q emulator_frame=%d, want image/png frame=%d", frame.ContentType, frame.EmulatorFrame, snap.Frame)
+	}
+	img, err := png.Decode(bytes.NewReader(frame.Data))
+	if err != nil {
+		t.Fatalf("decode live PNG: %v", err)
+	}
+	if bounds := img.Bounds(); bounds.Dx() != 160 || bounds.Dy() != 144 {
+		t.Fatalf("live PNG bounds = %v, want 160x144", bounds)
 	}
 
 	replayBytes, err := manager.Replay(id)

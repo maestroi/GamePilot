@@ -118,7 +118,7 @@ type gomeboyTetrisRuntime struct {
 }
 
 func openGomeboyTetrisRuntime(path string) (tetrisRuntime, error) {
-	sess, err := emulatorsession.OpenROM(path)
+	sess, err := emulatorsession.OpenROMWithVideo(path)
 	if err != nil {
 		return nil, err
 	}
@@ -184,7 +184,11 @@ func (r *tetrisRunner) Run(ctx context.Context, publish func(Update)) (result Re
 		recorded := tetris.NewReplay(hash, obs)
 		replay = &recorded
 	}
-	if err := publishTetris(publish, r.config.Planner, runtime.CartridgeTitle(), hash, 0, obs, nil, "planning"); err != nil {
+	image, err := captureFrame(runtime)
+	if err != nil {
+		return Result{}, err
+	}
+	if err := publishTetris(publish, r.config.Planner, runtime.CartridgeTitle(), hash, 0, obs, nil, "planning", image); err != nil {
 		return Result{}, err
 	}
 
@@ -208,7 +212,7 @@ func (r *tetrisRunner) Run(ctx context.Context, publish func(Update)) (result Re
 			}
 			return Result{}, fmt.Errorf("sessions: Tetris move %d plan: %w", moves+1, err)
 		}
-		if err := publishTetris(publish, r.config.Planner, runtime.CartridgeTitle(), hash, moves, before, plan.Decision, "executing"); err != nil {
+		if err := publishTetris(publish, r.config.Planner, runtime.CartridgeTitle(), hash, moves, before, plan.Decision, "executing", nil); err != nil {
 			return Result{}, err
 		}
 
@@ -226,14 +230,18 @@ func (r *tetrisRunner) Run(ctx context.Context, publish func(Update)) (result Re
 		}
 		moves++
 		obs = after
-		if err := publishTetris(publish, r.config.Planner, runtime.CartridgeTitle(), hash, moves, obs, plan.Decision, "planning"); err != nil {
+		image, err = captureFrame(runtime)
+		if err != nil {
+			return Result{}, err
+		}
+		if err := publishTetris(publish, r.config.Planner, runtime.CartridgeTitle(), hash, moves, obs, plan.Decision, "planning", image); err != nil {
 			return Result{}, err
 		}
 	}
 	return Result{Reason: "move_limit"}, nil
 }
 
-func publishTetris(publish func(Update), planner, title, hash string, moves int, obs tetris.Observation, decision json.RawMessage, activity string) error {
+func publishTetris(publish func(Update), planner, title, hash string, moves int, obs tetris.Observation, decision json.RawMessage, activity string, image *Frame) error {
 	payload, err := json.Marshal(obs)
 	if err != nil {
 		return fmt.Errorf("sessions: encode Tetris observation: %w", err)
@@ -247,6 +255,7 @@ func publishTetris(publish func(Update), planner, title, hash string, moves int,
 		Observation:     payload,
 		Decision:        decision,
 		PlannerActivity: activity,
+		Image:           image,
 	})
 	return nil
 }
@@ -287,9 +296,9 @@ func (lookaheadTetrisPlanner) Plan(_ context.Context, obs tetris.Observation) (T
 		return TetrisPlan{}, err
 	}
 	payload, err := json.Marshal(struct {
-		Placement  tetris.Placement  `json:"placement"`
-		Score      float64           `json:"score"`
-		TotalLines int               `json:"total_lines"`
+		Placement  tetris.Placement   `json:"placement"`
+		Score      float64            `json:"score"`
+		TotalLines int                `json:"total_lines"`
 		Reply      *tetris.Simulation `json:"reply,omitempty"`
 	}{
 		Placement:  decision.First.Placement,
