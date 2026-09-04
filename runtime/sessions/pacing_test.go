@@ -20,6 +20,36 @@ func TestNormalizePacingDefaultsToFast(t *testing.T) {
 	}
 }
 
+func TestManagerNormalizesPacingBeforeRunnerFactory(t *testing.T) {
+	seen := make(chan PacingMode, 1)
+	factory := RunnerFactoryFunc(func(config LaunchConfig) (Runner, error) {
+		seen <- config.Pacing
+		return runnerFunc(func(context.Context, func(Update)) (Result, error) {
+			return Result{Reason: "completed"}, nil
+		}), nil
+	})
+	m := newManager(factory, time.Now, func() (string, error) { return "pacing", nil })
+	id, err := m.Start(LaunchConfig{ROMPath: "x", Profile: "tetris", Planner: "fake"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := <-seen; got != PacingFast {
+		t.Fatalf("factory pacing = %q, want %q", got, PacingFast)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	snap, err := m.Wait(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Config.Pacing != PacingFast {
+		t.Fatalf("snapshot pacing = %q, want %q", snap.Config.Pacing, PacingFast)
+	}
+	if _, err := m.Start(LaunchConfig{ROMPath: "x", Profile: "tetris", Planner: "fake", Pacing: "turbo"}); err == nil {
+		t.Fatal("expected invalid pacing to be rejected")
+	}
+}
+
 func TestRealtimeFramePacerTargetsGameBoyCadenceWithoutSleepingInTest(t *testing.T) {
 	now := time.Unix(100, 0)
 	var sleeps []time.Duration
