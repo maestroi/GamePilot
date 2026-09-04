@@ -8,15 +8,15 @@ The handler owns HTTP policy only. Session lifecycle, emulator ownership, planni
 
 The operator handler uses one deployment-configured Bearer token.
 
-If the token is empty, `operatorapi.NewHandler` returns a handler with **no operator routes mounted**: every path returns `404`. Missing auth configuration therefore never turns launch/stop/delete into anonymous endpoints.
+If the token is empty, `operatorapi.NewHandler` returns a handler with **no operator routes mounted**: every path returns `404`. Missing auth configuration therefore never turns launch/stop/delete into anonymous endpoints. `NewHandlerWithReplay` preserves the same fail-closed behavior.
 
-When a token is configured, every route below requires:
+When a token is configured, every mounted route requires:
 
 ```text
 Authorization: Bearer <operator-token>
 ```
 
-The token itself is not exposed by `/v1/config`, session snapshots, or structured errors.
+The token itself is not exposed by `/v1/config`, session snapshots, structured errors, or the embedded operator-console assets.
 
 The intended deployment is a private process/interface/VPN/reverse-proxy location. The later public spectator must not mount this handler.
 
@@ -62,7 +62,7 @@ handler, err := operatorapi.NewHandler(operatorapi.Options{
 
 ## Routes
 
-All routes are private/authenticated:
+`NewHandler` mounts these private/authenticated routes:
 
 ```text
 GET    /v1/config
@@ -73,6 +73,14 @@ POST   /v1/sessions
 POST   /v1/sessions/{id}/stop
 DELETE /v1/sessions/{id}
 ```
+
+`NewHandlerWithReplay` composes the same route set with:
+
+```text
+GET    /v1/sessions/{id}/replay
+```
+
+That extra route is intended for the private operator console. It returns retained replay bytes as an `application/json` attachment when a session has finalized a replay. Missing sessions or sessions without retained replay return `404`; authentication is identical to every other operator route. `NewHandler` remains available for deployments that do not want replay downloads mounted.
 
 The frame route preserves the live-session image headers from the read side:
 
@@ -146,7 +154,7 @@ Common statuses:
 
 - `400` invalid request or allowlisted launch configuration;
 - `401` missing/wrong Bearer token;
-- `404` missing session/frame, or all operator routes when auth is disabled;
+- `404` missing session/frame/replay, or all operator routes when auth is disabled;
 - `409` attempt to delete a non-terminal session;
 - `429` mutation rate limit exceeded;
 - `500` internal start/read/stop/delete failure with a generic public message.
@@ -163,8 +171,10 @@ Defaults:
 
 These are server configuration, not client-controlled fields. Session execution itself is asynchronous: a successful create only needs to validate/configure and register the session before its owner goroutine performs ROM startup/gameplay.
 
-## Next surface
+## Operator console
 
-Issue #10 should build the private operator console against this API. The console can discover safe ROM/profile/planner/model choices from `/v1/config`, launch with `pacing: realtime`, poll the copied session state, and display `/frame` without gaining any direct emulator access.
+`runtime/operatorconsole` is the private same-origin browser surface built against this API. It discovers safe launch choices from `/v1/config`, launches with realtime pacing by default, polls copied session state and the latest retained frame, renders Tetris observation/planner metadata, and exposes stop/delete plus replay download when `NewHandlerWithReplay` is mounted.
 
-Issue #8 must define a narrower public DTO and separate read-only handler rather than exposing this authenticated operator contract publicly.
+See [`operator-console.md`](operator-console.md) for composition, browser authentication behavior, polling, and security headers.
+
+The separate public spectator (#8) must define a narrower explicitly allowlisted public DTO and read-only handler rather than exposing this authenticated operator contract publicly.
