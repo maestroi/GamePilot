@@ -16,13 +16,28 @@ type Session struct {
 }
 
 // OpenROM creates a deterministic headless emulator for a ROM. Video output is
-// disabled because the initial GamePilot Tetris profile is memory-driven.
+// disabled for memory-driven one-shot/benchmark paths that do not inspect the
+// framebuffer.
 func OpenROM(path string) (*Session, error) {
-	emu, err := gomeboy.New(
+	return openROM(path, false)
+}
+
+// OpenROMWithVideo creates a deterministic headless emulator while retaining
+// framebuffer generation. Long-lived observable sessions use this path so a
+// reader can receive rendered frames without changing the memory-driven planner.
+func OpenROMWithVideo(path string) (*Session, error) {
+	return openROM(path, true)
+}
+
+func openROM(path string, video bool) (*Session, error) {
+	opts := []gomeboy.Option{
 		gomeboy.WithROM(path),
 		gomeboy.Headless(),
-		gomeboy.WithoutVideo(),
-	)
+	}
+	if !video {
+		opts = append(opts, gomeboy.WithoutVideo())
+	}
+	emu, err := gomeboy.New(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("session: open ROM: %w", err)
 	}
