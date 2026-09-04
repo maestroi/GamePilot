@@ -2,7 +2,7 @@
 
 `runtime/sessions` is the lifecycle and read-model layer between planner logic and the browser/API surfaces.
 
-It makes a GamePilot run long-lived, cancellable, observable through copied state, and safe to host inside a server process. Managed observable sessions now also publish the latest rendered Game Boy framebuffer as an encoded PNG.
+It makes a GamePilot run long-lived, cancellable, observable through copied state, and safe to host inside a server process. Managed observable sessions publish the latest rendered Game Boy framebuffer as an encoded PNG and can run controller execution at a watchable real-time cadence.
 
 ## Ownership rule
 
@@ -47,7 +47,10 @@ The current internal launch object contains:
 - planner ID
 - optional move limit (`0` means until game over/cancel)
 - replay recording toggle
+- pacing mode (`fast` or `realtime`)
 - safe planner options such as model alias and shortlist size
+
+Unspecified pacing normalizes to `fast` for backward compatibility. `realtime` is intended for human-observable live sessions.
 
 `ROMPath` has `json:"-"` so a generic serialized session snapshot cannot accidentally reveal a server filesystem path. The private control API will later resolve an allowlisted ROM alias to this internal path.
 
@@ -68,13 +71,14 @@ The Tetris runner owns, in one goroutine:
 4. memory observation;
 5. planner selection;
 6. strict placement execution;
-7. framebuffer capture/PNG encoding at stable publish boundaries;
-8. replay append/finalization;
-9. emulator close.
+7. optional wall-clock pacing of the controller's already-required emulator frames;
+8. framebuffer capture/PNG encoding for sampled presentation frames;
+9. replay append/finalization;
+10. emulator close.
 
 The one-shot CLI still uses the video-disabled emulator path when rendered frames are not needed.
 
-A manager can be constructed programmatically:
+A watchable manager session can be constructed programmatically:
 
 ```go
 manager := sessions.NewTetrisManager(nil)
@@ -85,25 +89,58 @@ id, err := manager.Start(sessions.LaunchConfig{
     Planner:      "lookahead",
     MoveLimit:    25,
     RecordReplay: true,
+    Pacing:       sessions.PacingRealtime,
 })
 if err != nil {
     return err
 }
 
-snapshot, err := manager.Wait(context.Background(), id)
+snapshot, err := manager.Snapshot(id)
 if err != nil {
     return err
 }
-fmt.Println(snapshot.Status, snapshot.Moves, snapshot.Reason)
+fmt.Println(snapshot.Status, snapshot.Moves, snapshot.PlannerActivity)
 
 frame, err := manager.Frame(id)
 if err != nil {
     return err
 }
-fmt.Println(frame.ContentType, frame.Width, frame.Height)
+fmt.Println(frame.ContentType, frame.Width, frame.Height, frame.EmulatorFrame)
 ```
 
 `Snapshot.Observation` and `Snapshot.Decision` are profile/planner-specific JSON payloads. They are copied on publish/read so consumers cannot mutate the runner's state.
+
+## Realtime pacing
+
+Gomeboy is intentionally unthrottled. GamePilot therefore treats pacing as presentation behavior, not emulation behavior.
+
+`fast` mode preserves the existing unthrottled controller path. `realtime` mode uses the same controller but attaches an observer after each emulator frame that the controller already stepped. The observer may wait in wall-clock time and publish a frame, but it never calls `StepFrame`, changes buttons, or changes placement legality.
+
+The target cadence uses the native DMG timing relationship:
+
+```text
+70224 clocks/frame at 4194304 Hz ≈ 59.7 frames/second
+```
+
+The pacer schedules every controller frame at that cadence. PNG publication is sampled at roughly 30 fps to reduce encoding work, with immediate publication for important visible changes such as rotation, horizontal movement, ready/visibility transitions, and game over.
+
+Cancellation is context-aware and interrupts pacing sleeps promptly.
+
+Tests assert that observed/realtime controller execution finishes on the same emulator frame and final state as the ordinary path, and that fast/realtime runs produce identical replay bytes for the same planner choices and stable state boundaries.
+
+## Planner activity and latency
+
+While a planner is running, snapshots expose:
+
+- `planner_activity: "planning"`
+- `planner_started_at`
+
+When a decision returns and controller execution starts, snapshots expose:
+
+- `planner_activity: "executing"`
+- `planner_latency_ms`
+
+This is especially useful for local/remote LLM planners: a frozen Game Boy image while the model is thinking is represented as planner work rather than appearing to be a hung emulator.
 
 ## Frame publication
 
@@ -117,13 +154,11 @@ The snapshot exposes freshness metadata without embedding the image itself:
 - `frame_sequence`: the snapshot sequence that produced the currently retained frame;
 - `frame_available`: whether a frame has been published;
 - `updated_at`: wall-clock timestamp for the latest session-visible update;
-- `frame`: deterministic emulator frame number from the structured observation.
+- `frame`: deterministic emulator frame number represented by the current structured observation.
 
 The retained `Frame` includes its own sequence, emulator frame number, dimensions, MIME type, capture time, and image bytes.
 
-For Tetris, frames are currently captured after startup and after each completed placement. The planner continues to read RAM only. Calling Gomeboy `Frame()` does not advance the emulator or change input boundaries.
-
-Issue #13 will add watchable wall-clock pacing and intermediate controller frame publication so rotations, movement, falling pieces, and line clears visibly animate instead of jumping between stable placement boundaries.
+The planner continues to read RAM only. Calling Gomeboy `Frame()` does not advance the emulator or change input boundaries.
 
 ## Read-only HTTP transport
 
@@ -168,6 +203,4 @@ Cancellation during planning or a placement never fabricates a completed move. T
 
 ## What remains
 
-Issue #13 adds wall-clock pacing and intermediate presentation frames without changing deterministic planner/controller frame semantics.
-
-Issues #9/#10 add the private session API/operator console, and #8 adds the separate public read-only spectator.
+Issues #9/#10 add the private authenticated session API/operator console, and #8 adds the separate public read-only spectator. Those surfaces can now request `realtime` pacing and consume the existing copied snapshot/latest-frame read model without owning emulator timing.
