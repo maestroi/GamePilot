@@ -1,8 +1,8 @@
 # Live session runtime
 
-`runtime/sessions` is the lifecycle layer between one-shot planner logic and the future browser/API surfaces.
+`runtime/sessions` is the lifecycle and read-model layer between planner logic and the browser/API surfaces.
 
-It does **not** expose HTTP and it does **not** render public/private UI. Its job is to make a GamePilot run long-lived, cancellable, observable through copied state, and safe to host inside a server process.
+It makes a GamePilot run long-lived, cancellable, observable through copied state, and safe to host inside a server process. Managed observable sessions now also publish the latest rendered Game Boy framebuffer as an encoded PNG.
 
 ## Ownership rule
 
@@ -18,9 +18,9 @@ profile runner
 Gomeboy emulator
 ```
 
-Other goroutines never receive the emulator pointer. They call `Manager.Snapshot`, `Manager.List`, `Manager.Wait`, or `Manager.Replay`, which return copied read models/bytes.
+Other goroutines never receive the emulator pointer. They call `Manager.Snapshot`, `Manager.List`, `Manager.Frame`, `Manager.Wait`, or `Manager.Replay`, which return copied read models/bytes.
 
-That boundary is required because one Gomeboy `Emulator` is not safe for concurrent use. It also gives the upcoming frame publisher and HTTP handlers one safe read model instead of making them coordinate emulator access themselves.
+That boundary is required because one Gomeboy `Emulator` is not safe for concurrent use. Frame capture also happens inside the owner goroutine: Gomeboy's RGB framebuffer is immediately encoded to PNG before anything is published, so the framebuffer's aliased memory never escapes to readers.
 
 ## Lifecycle
 
@@ -62,14 +62,17 @@ Credentials and raw model endpoints are deliberately not part of launch configur
 
 The Tetris runner owns, in one goroutine:
 
-1. opening the ROM;
+1. opening the ROM with framebuffer generation enabled;
 2. exact Rev 1 hash validation;
 3. deterministic Type A level-0 startup;
 4. memory observation;
 5. planner selection;
 6. strict placement execution;
-7. replay append/finalization;
-8. emulator close.
+7. framebuffer capture/PNG encoding at stable publish boundaries;
+8. replay append/finalization;
+9. emulator close.
+
+The one-shot CLI still uses the video-disabled emulator path when rendered frames are not needed.
 
 A manager can be constructed programmatically:
 
@@ -92,9 +95,53 @@ if err != nil {
     return err
 }
 fmt.Println(snapshot.Status, snapshot.Moves, snapshot.Reason)
+
+frame, err := manager.Frame(id)
+if err != nil {
+    return err
+}
+fmt.Println(frame.ContentType, frame.Width, frame.Height)
 ```
 
 `Snapshot.Observation` and `Snapshot.Decision` are profile/planner-specific JSON payloads. They are copied on publish/read so consumers cannot mutate the runner's state.
+
+## Frame publication
+
+A session retains only the most recently published encoded frame. There is no frame queue.
+
+That means a slow browser may skip old presentation frames, but it cannot backpressure emulator execution or cause unbounded buffering. `Manager.Frame(id)` returns a defensive copy of the latest image bytes.
+
+The snapshot exposes freshness metadata without embedding the image itself:
+
+- `sequence`: monotonically increases when session-visible state changes;
+- `frame_sequence`: the snapshot sequence that produced the currently retained frame;
+- `frame_available`: whether a frame has been published;
+- `updated_at`: wall-clock timestamp for the latest session-visible update;
+- `frame`: deterministic emulator frame number from the structured observation.
+
+The retained `Frame` includes its own sequence, emulator frame number, dimensions, MIME type, capture time, and image bytes.
+
+For Tetris, frames are currently captured after startup and after each completed placement. The planner continues to read RAM only. Calling Gomeboy `Frame()` does not advance the emulator or change input boundaries.
+
+Issue #13 will add watchable wall-clock pacing and intermediate controller frame publication so rotations, movement, falling pieces, and line clears visibly animate instead of jumping between stable placement boundaries.
+
+## Read-only HTTP transport
+
+`NewReadHandler(manager)` provides a small GET-only transport for later browser surfaces:
+
+```text
+GET /v1/sessions/{id}
+GET /v1/sessions/{id}/frame
+```
+
+The state route returns the copied `Snapshot` as JSON with `Cache-Control: no-store`.
+
+The frame route returns the current encoded PNG directly, also with `Cache-Control: no-store`, plus:
+
+- `X-GamePilot-Sequence`
+- `X-GamePilot-Emulator-Frame`
+
+No launch, stop, delete, ROM-selection, credential, or manual-control routes are mounted by this handler. The future private operator API (#9) owns mutations. The public spectator (#8) must still define a narrower explicitly allowlisted public DTO rather than serializing the generic internal snapshot directly.
 
 ## LLM sessions
 
@@ -119,10 +166,8 @@ This is intentionally in-memory for now. Durable artifact storage/retention belo
 
 Cancellation during planning or a placement never fabricates a completed move. The finalized replay ends at the last fully completed placement boundary and remains valid according to the existing replay format.
 
-## What this slice does not do
+## What remains
 
-Issue #7 adds framebuffer generation and immutable image/frame publication. Current production live sessions still open the emulator through the memory-only `OpenROM` path with video generation disabled.
-
-Issue #13 adds wall-clock pacing and intermediate presentation frames. The deterministic planner/controller remains frame-based and unthrottled until that outer runtime layer is added.
+Issue #13 adds wall-clock pacing and intermediate presentation frames without changing deterministic planner/controller frame semantics.
 
 Issues #9/#10 add the private session API/operator console, and #8 adds the separate public read-only spectator.
