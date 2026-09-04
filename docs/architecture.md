@@ -10,7 +10,7 @@ Planner = strategic decision maker
 Controller = deterministic short-horizon execution
 Replay = planner-independent reproducibility record
 Benchmark = replay-derived fixed workload for planner comparison
-Session runtime = long-lived lifecycle + copied read model
+Session runtime = long-lived lifecycle + copied read model + presentation pacing
 ```
 
 ## Current packages
@@ -21,20 +21,20 @@ GamePilot
 ├── planner/openai     minimal OpenAI-compatible chat-completions transport
 ├── profiles           minimal profile-selection boundary
 ├── profiles/tetris    Tetris-specific addresses, semantics, planning, benchmark, controller, and replay state
-├── runtime/sessions   long-lived session lifecycle and Tetris runner adapter
+├── runtime/sessions   lifecycle, frame publication, pacing, read transport, and Tetris runner adapter
 └── cmd/gamepilot      runnable CLI and benchmark entrypoint
 ```
 
-The emulator session package does not recreate emulation primitives. Profiles and controllers use Gomeboy's public `StepFrame`/`StepFrames`, `Press`/`Release`, `Peek8`/`PeekInto`, `FrameCount`, `SaveState`/`LoadState`, cartridge metadata, and ROM SHA-256 directly.
+The emulator session package does not recreate emulation primitives. Profiles and controllers use Gomeboy's public `StepFrame`/`StepFrames`, `Press`/`Release`, `Peek8`/`PeekInto`, `FrameCount`, `SaveState`/`LoadState`, cartridge metadata, ROM SHA-256, and framebuffer output directly.
 
 ## Live-session ownership
 
 The live runtime adds a strict single-owner rule above those primitives:
 
 ```text
-browser/API readers (future)
+browser/API readers
         ↓
-Manager.Snapshot / List / Replay
+Manager.Snapshot / Frame / List / Replay
         ↓ copied immutable data
 managed session goroutine
         ↓
@@ -43,9 +43,9 @@ profile runner
 Gomeboy emulator
 ```
 
-One managed session goroutine is the only caller allowed to open, step, inspect, control, and close its emulator. HTTP handlers, spectators, persistence workers, and other readers must never receive the emulator pointer. This matches Gomeboy's non-concurrent instance contract and prevents frame publication or UI polling from racing deterministic controller execution.
+One managed session goroutine is the only caller allowed to open, step, inspect, control, capture frames from, and close its emulator. HTTP handlers, spectators, persistence workers, and other readers never receive the emulator pointer. This matches Gomeboy's non-concurrent instance contract and prevents frame publication or UI polling from racing deterministic controller execution.
 
-`runtime/sessions` stores profile observation and planner decision payloads as copied JSON. That keeps lifecycle/state management generic while leaving Tetris board/action semantics inside `profiles/tetris`. The production Tetris runner performs ROM hash validation, deterministic startup, planning, strict controller execution, replay recording, and exact-once emulator close inside the owner goroutine.
+`runtime/sessions` stores profile observation and planner decision payloads as copied JSON plus one latest encoded framebuffer image. That keeps lifecycle/state management generic while leaving Tetris board/action semantics inside `profiles/tetris`. Slow readers may miss presentation frames, but there is no frame queue and therefore no observer backpressure.
 
 Internal ROM paths are excluded from serialized session snapshots. Model credentials/provider URLs are not part of session launch configuration; future private server code resolves safe aliases to those secrets outside the session read model.
 
@@ -79,9 +79,34 @@ canonical state hash + replay record
 
 A replay contains game-level placements and decoded state, not emulator-internal input timing or opaque save-state bytes. Verification starts from the same deterministic startup, re-executes each recorded placement through the normal controller, and compares both canonical state hashes and frame counts after every boundary.
 
-This preserves the most important planner boundary: heuristic, lookahead, LLM, or future planners only produce `Placement{Rotation, TargetColumn}`. They do not own frame timing, collision assumptions, lock detection, or replay execution.
+This preserves the most important planner boundary: heuristic, lookahead, LLM, or future planners only produce `Placement{Rotation, TargetColumn}`. They do not own frame timing, collision assumptions, lock detection, replay execution, or presentation pacing.
 
 The live session runner reuses this same loop. Cancellation can stop a session at any point, but a replay records only placements that fully reached the next stable observation boundary. Terminal session state may therefore retain a valid partial replay without pretending an interrupted placement completed.
+
+## Presentation frames and realtime pacing
+
+Framebuffer output is strictly a human-observation path:
+
+```text
+controller-required emulator frame
+        ↓
+memory-derived Observation
+        ↓
+optional presentation observer
+        ├─ wall-clock wait only
+        └─ sampled framebuffer capture → PNG
+```
+
+`ExecutePlacementObserved` calls a presentation observer after frames the controller already executed. The observer cannot cause extra emulator stepping. Normal `ExecutePlacement` uses the same controller implementation with no observer.
+
+Session pacing has two modes:
+
+- `fast`: existing unthrottled behavior, used by tests and non-visual runs;
+- `realtime`: schedules each controller frame near the native DMG cadence, ~59.7 Hz.
+
+Realtime mode samples encoded PNG publication around 30 fps and publishes immediately for important visible transitions such as rotation, horizontal movement, visibility/ready changes, and game over. Only wall-clock time changes; emulator frame counts and input boundaries do not.
+
+Planner waits are represented separately from emulator pacing. A session exposes `planner_started_at` while planning and `planner_latency_ms` once execution begins, so an LLM delay is visible as planner activity instead of being confused with a frozen emulator.
 
 ## Preview-piece lookahead
 
@@ -128,17 +153,18 @@ Completed:
 6. Deterministic two-ply preview-piece lookahead plus strategically unique top-N LLM candidate shortlisting.
 7. Replay-backed fixed-sequence planner benchmarking with board-quality, latency, retry, and candidate-compression reporting.
 8. Long-lived session manager/runtime with cancellation, copied snapshots, replay finalization, multiple independent sessions, and a production Tetris runner.
+9. Rendered Gomeboy frame publication plus GET-only structured snapshot/frame transport.
+10. Watchable realtime session pacing and intermediate controller-frame publication.
 
 Next live-product slices:
 
-9. Publish rendered Gomeboy frames and structured session snapshots (#7).
-10. Add watchable wall-clock pacing without changing emulator frame/input semantics (#13).
 11. Add private authenticated session control API and operator console (#9/#10).
 12. Add the separate public read-only spectator and deployment trust split (#8/#12).
-13. Add MCP only as an adapter over the stable private session service (#14).
+13. Add durable session history/artifact retention (#11).
+14. Add MCP only as an adapter over the stable private session service (#14).
 
 Benchmark reports should be used across longer/multiple replay scenarios to decide whether deeper search or the LLM adds enough value to justify its cost; deeper search is not a prerequisite for the live-product work.
 
 Future games are expected to own different observation models; the generic runtime should not absorb Tetris board geometry, piece IDs, RAM addresses, lookahead rules, benchmark scenario semantics, or replay-state hashing rules.
 
-See [`live-sessions.md`](live-sessions.md) for the session API and ownership details and [`benchmark.md`](benchmark.md) for benchmark fairness and limitations.
+See [`live-sessions.md`](live-sessions.md) for the session API, frame/pacing semantics, and ownership details and [`benchmark.md`](benchmark.md) for benchmark fairness and limitations.

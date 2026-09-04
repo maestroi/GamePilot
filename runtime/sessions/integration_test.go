@@ -32,17 +32,38 @@ func TestTetrisManagerRealROM(t *testing.T) {
 		Planner:      "lookahead",
 		MoveLimit:    3,
 		RecordReplay: true,
+		Pacing:       PacingRealtime,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	snap, err := manager.Wait(ctx, id)
-	if err != nil {
-		t.Fatal(err)
+
+	// Realtime mode should publish intermediate presentation frames, not only the
+	// initial image and one image per completed placement. Polling only reads the
+	// manager's copied latest-frame metadata and never touches the emulator.
+	seenFrameSequences := make(map[uint64]struct{})
+	var snap Snapshot
+	for {
+		snap, err = manager.Snapshot(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if snap.FrameSequence != 0 {
+			seenFrameSequences[snap.FrameSequence] = struct{}{}
+		}
+		if terminal(snap.Status) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
+
 	if snap.Status != StatusDone {
 		t.Fatalf("status = %s, want done (error=%q reason=%q)", snap.Status, snap.Error, snap.Reason)
 	}
@@ -51,6 +72,12 @@ func TestTetrisManagerRealROM(t *testing.T) {
 	}
 	if snap.Moves != 3 {
 		t.Fatalf("moves = %d, want 3", snap.Moves)
+	}
+	if snap.Config.Pacing != PacingRealtime {
+		t.Fatalf("pacing = %q, want realtime", snap.Config.Pacing)
+	}
+	if len(seenFrameSequences) < 5 {
+		t.Fatalf("distinct live frame sequences = %d, want intermediate realtime publications beyond placement boundaries", len(seenFrameSequences))
 	}
 	if snap.ROMSHA256 != tetris.Rev1SHA256 {
 		t.Fatalf("ROM SHA-256 = %s, want %s", snap.ROMSHA256, tetris.Rev1SHA256)

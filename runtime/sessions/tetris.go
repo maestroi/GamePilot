@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	emulatorsession "github.com/maestroi/GamePilot/emulator/session"
 	"github.com/maestroi/GamePilot/profiles/tetris"
@@ -61,6 +62,8 @@ func NewTetrisRunnerFactory(extra map[string]TetrisPlannerFactory) RunnerFactory
 	return &tetrisRunnerFactory{
 		open:     openGomeboyTetrisRuntime,
 		planners: planners,
+		now:      time.Now,
+		pacer:    defaultPacerFactory,
 	}
 }
 
@@ -74,6 +77,8 @@ func NewTetrisManager(extra map[string]TetrisPlannerFactory) *Manager {
 type tetrisRunnerFactory struct {
 	open     func(string) (tetrisRuntime, error)
 	planners map[string]TetrisPlannerFactory
+	now      func() time.Time
+	pacer    pacerFactory
 }
 
 func (f *tetrisRunnerFactory) New(config LaunchConfig) (Runner, error) {
@@ -95,13 +100,23 @@ func (f *tetrisRunnerFactory) New(config LaunchConfig) (Runner, error) {
 	if open == nil {
 		open = openGomeboyTetrisRuntime
 	}
-	return &tetrisRunner{config: config, open: open, planner: planner}, nil
+	now := f.now
+	if now == nil {
+		now = time.Now
+	}
+	newPacer := f.pacer
+	if newPacer == nil {
+		newPacer = defaultPacerFactory
+	}
+	return &tetrisRunner{config: config, open: open, planner: planner, now: now, pacer: newPacer}, nil
 }
 
 type tetrisRunner struct {
 	config  LaunchConfig
 	open    func(string) (tetrisRuntime, error)
 	planner TetrisPlanner
+	now     func() time.Time
+	pacer   pacerFactory
 }
 
 type tetrisRuntime interface {
@@ -111,6 +126,13 @@ type tetrisRuntime interface {
 	Observe() (tetris.Observation, error)
 	Execute(ctx context.Context, placement tetris.Placement) (tetris.Observation, error)
 	Close() error
+}
+
+// observedTetrisRuntime is optional so existing fake runtimes and fast-mode
+// execution stay simple. Production Gomeboy sessions implement it to expose the
+// exact controller frames already being stepped.
+type observedTetrisRuntime interface {
+	ExecuteObserved(ctx context.Context, placement tetris.Placement, observer tetris.PlacementFrameObserver) (tetris.Observation, error)
 }
 
 type gomeboyTetrisRuntime struct {
@@ -135,6 +157,9 @@ func (r *gomeboyTetrisRuntime) Observe() (tetris.Observation, error) {
 }
 func (r *gomeboyTetrisRuntime) Execute(ctx context.Context, placement tetris.Placement) (tetris.Observation, error) {
 	return tetris.ExecutePlacement(ctx, r.session.Emulator(), placement)
+}
+func (r *gomeboyTetrisRuntime) ExecuteObserved(ctx context.Context, placement tetris.Placement, observer tetris.PlacementFrameObserver) (tetris.Observation, error) {
+	return tetris.ExecutePlacementObserved(ctx, r.session.Emulator(), placement, observer)
 }
 func (r *gomeboyTetrisRuntime) Close() error { return r.session.Close() }
 
@@ -188,7 +213,8 @@ func (r *tetrisRunner) Run(ctx context.Context, publish func(Update)) (result Re
 	if err != nil {
 		return Result{}, err
 	}
-	if err := publishTetris(publish, r.config.Planner, runtime.CartridgeTitle(), hash, 0, obs, nil, "planning", image); err != nil {
+	planningStarted := r.now()
+	if err := publishTetris(publish, r.config.Planner, runtime.CartridgeTitle(), hash, 0, obs, nil, "planning", image, planningStarted, 0); err != nil {
 		return Result{}, err
 	}
 
@@ -203,6 +229,11 @@ func (r *tetrisRunner) Run(ctx context.Context, publish func(Update)) (result Re
 
 		before := obs
 		plan, err := r.planner.Plan(ctx, before)
+		plannerLatency := r.now().Sub(planningStarted)
+		if plannerLatency < 0 {
+			plannerLatency = 0
+		}
+		plannerLatencyMS := plannerLatency.Milliseconds()
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				return Result{Reason: "stopped"}, err
@@ -212,11 +243,11 @@ func (r *tetrisRunner) Run(ctx context.Context, publish func(Update)) (result Re
 			}
 			return Result{}, fmt.Errorf("sessions: Tetris move %d plan: %w", moves+1, err)
 		}
-		if err := publishTetris(publish, r.config.Planner, runtime.CartridgeTitle(), hash, moves, before, plan.Decision, "executing", nil); err != nil {
+		if err := publishTetris(publish, r.config.Planner, runtime.CartridgeTitle(), hash, moves, before, plan.Decision, "executing", nil, time.Time{}, plannerLatencyMS); err != nil {
 			return Result{}, err
 		}
 
-		after, err := runtime.Execute(ctx, plan.Placement)
+		after, err := r.execute(ctx, runtime, hash, moves, before, plan, plannerLatencyMS, publish)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				return Result{Reason: "stopped"}, err
@@ -234,28 +265,77 @@ func (r *tetrisRunner) Run(ctx context.Context, publish func(Update)) (result Re
 		if err != nil {
 			return Result{}, err
 		}
-		if err := publishTetris(publish, r.config.Planner, runtime.CartridgeTitle(), hash, moves, obs, plan.Decision, "planning", image); err != nil {
+		planningStarted = r.now()
+		if err := publishTetris(publish, r.config.Planner, runtime.CartridgeTitle(), hash, moves, obs, plan.Decision, "planning", image, planningStarted, 0); err != nil {
 			return Result{}, err
 		}
 	}
 	return Result{Reason: "move_limit"}, nil
 }
 
-func publishTetris(publish func(Update), planner, title, hash string, moves int, obs tetris.Observation, decision json.RawMessage, activity string, image *Frame) error {
+func (r *tetrisRunner) execute(ctx context.Context, runtime tetrisRuntime, hash string, moves int, before tetris.Observation, plan TetrisPlan, plannerLatencyMS int64, publish func(Update)) (tetris.Observation, error) {
+	if r.config.Pacing != PacingRealtime {
+		return runtime.Execute(ctx, plan.Placement)
+	}
+	observed, ok := runtime.(observedTetrisRuntime)
+	if !ok {
+		return runtime.Execute(ctx, plan.Placement)
+	}
+
+	pacer := r.pacer(PacingRealtime)
+	if pacer == nil {
+		pacer = fastFramePacer{}
+	}
+	lastPublished := before
+	sampled := 0
+	observer := func(mid tetris.Observation) error {
+		if err := pacer.Wait(ctx, mid.Frame); err != nil {
+			return err
+		}
+		sampled++
+		important := presentationStateChanged(lastPublished, mid)
+		if sampled%presentationSampleEveryFrames != 0 && !important {
+			return nil
+		}
+		image, err := captureFrame(runtime)
+		if err != nil {
+			return err
+		}
+		if err := publishTetris(publish, r.config.Planner, runtime.CartridgeTitle(), hash, moves, mid, plan.Decision, "executing", image, time.Time{}, plannerLatencyMS); err != nil {
+			return err
+		}
+		lastPublished = mid
+		return nil
+	}
+	return observed.ExecuteObserved(ctx, plan.Placement, observer)
+}
+
+func presentationStateChanged(previous, current tetris.Observation) bool {
+	return previous.CurrentPiece.Rotation != current.CurrentPiece.Rotation ||
+		previous.CurrentPiece.AnchorX != current.CurrentPiece.AnchorX ||
+		previous.CurrentPiece.Visible != current.CurrentPiece.Visible ||
+		previous.Ready != current.Ready ||
+		previous.GameOver != current.GameOver ||
+		previous.GameState != current.GameState
+}
+
+func publishTetris(publish func(Update), planner, title, hash string, moves int, obs tetris.Observation, decision json.RawMessage, activity string, image *Frame, plannerStartedAt time.Time, plannerLatencyMS int64) error {
 	payload, err := json.Marshal(obs)
 	if err != nil {
 		return fmt.Errorf("sessions: encode Tetris observation: %w", err)
 	}
 	publish(Update{
-		Profile:         tetris.ProfileID,
-		ROMSHA256:       hash,
-		CartridgeTitle:  title,
-		Frame:           obs.Frame,
-		Moves:           moves,
-		Observation:     payload,
-		Decision:        decision,
-		PlannerActivity: activity,
-		Image:           image,
+		Profile:          tetris.ProfileID,
+		ROMSHA256:        hash,
+		CartridgeTitle:   title,
+		Frame:            obs.Frame,
+		Moves:            moves,
+		Observation:      payload,
+		Decision:         decision,
+		PlannerActivity:  activity,
+		PlannerStartedAt: plannerStartedAt,
+		PlannerLatencyMS: plannerLatencyMS,
+		Image:            image,
 	})
 	return nil
 }

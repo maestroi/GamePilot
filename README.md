@@ -2,7 +2,7 @@
 
 GamePilot is a game-agent runtime built on top of the public [`pkg/gomeboy`](https://github.com/maestroi/gomeboy/tree/main/pkg/gomeboy) API.
 
-The first supported profile is **Game Boy Tetris, Rev 1**. The current vertical slice loads the exact ROM, boots Type A level 0 deterministically, decodes structured state from memory, executes verified game-level placements, supports one-ply heuristic, two-ply preview lookahead, and OpenAI-compatible LLM planners, records/verifies planner-independent replays, benchmarks planners on fixed replay-derived scenarios, and can host those planners inside a cancellable long-lived session runtime.
+The first supported profile is **Game Boy Tetris, Rev 1**. The current vertical slice loads the exact ROM, boots Type A level 0 deterministically, decodes structured state from memory, executes verified game-level placements, supports one-ply heuristic, two-ply preview lookahead, and OpenAI-compatible LLM planners, records/verifies planner-independent replays, benchmarks planners on fixed replay-derived scenarios, and can host those planners inside observable long-lived sessions with rendered Game Boy frames.
 
 ## Current slice
 
@@ -28,7 +28,9 @@ validated replay
 long-lived mode
   -> session Manager
   -> one owner goroutine per emulator
-  -> copied observation/decision snapshots for readers
+  -> copied observation/decision snapshots
+  -> latest encoded Game Boy frame
+  -> optional realtime presentation pacing
   -> cancellation + terminal status
   -> finalized replay bytes
 ```
@@ -46,30 +48,23 @@ Implemented now:
 - deterministic `Placement{Rotation, TargetColumn}` execution using verified rotate/shift inputs and soft drop
 - lock/new-piece transition detection before returning control
 - deterministic placement simulation with line clears and top-out detection
-- a one-piece heuristic over aggregate height, completed lines, holes, and bumpiness
+- one-ply heuristic planning
 - deterministic two-ply lookahead using the known ROM preview piece
-- deduplication of equivalent first-move board outcomes so symmetric raw rotations do not waste candidate slots
-- a standalone `lookahead` planner mode for deterministic preview-aware play
-- an OpenAI-compatible `/v1/chat/completions` client with configurable base URL/model/API-key environment variable
-- fast LLM defaults for game control: Qwen/vLLM-style thinking disabled and a 64-token completion cap
-- an LLM planner that sees only the best N unique two-ply candidates instead of every raw legal placement
-- configurable LLM shortlist size via `-llm-candidates` (default 10)
-- strict model-output decoding: exactly `rotation` and `target_column`, checked against the shortlisted legal candidate set before execution
-- up to three retries for malformed or illegal model output
-- versioned JSON replay records with ROM/profile/startup metadata
-- canonical SHA-256 hashes of decoded Tetris state plus separately verified frame numbers
-- fresh-boot replay verification that re-executes every recorded `Placement` through the strict controller
-- replay-backed fixed-sequence planner benchmarking for heuristic, lookahead, and optional LLM planning
-- benchmark metrics for survival, lines, final height/holes/bumpiness, planner latency, LLM retries, candidate compression, placement trace, and final board
-- versioned benchmark JSON reports with a canonical scenario hash
-- `runtime/sessions` long-lived lifecycle manager with queued/starting/running/stopping/done/failed states
-- exactly one runner goroutine owns each live emulator; readers see only copied snapshots/replay bytes
-- programmatic Tetris live runner for heuristic/lookahead plus an LLM planner factory hook
+- deduplication of equivalent first-move board outcomes
+- OpenAI-compatible `/v1/chat/completions` planning with strict JSON/legal-action validation and retries
+- versioned planner-independent replay recording and fresh-boot verification
+- replay-backed fixed-sequence planner benchmarking
+- `runtime/sessions` long-lived lifecycle management with one goroutine owning each emulator
 - cancellation-safe partial replay finalization and exact-once emulator close
-- multiple independent managed sessions inside one process
-- ROM-free tests for emulator-independent planning, lookahead, LLM HTTP compatibility, output validation/retries, replay hashing, benchmarking, serialization/verification, and live-session lifecycle ownership
+- rendered 160x144 Game Boy frame capture for managed observable sessions
+- latest-frame-only publication so slow readers cannot backpressure emulator execution
+- GET-only session snapshot/frame transport
+- `fast` and `realtime` session pacing modes
+- realtime controller presentation near native DMG cadence (~59.7 Hz) without changing emulator frames/input boundaries
+- sampled intermediate frame publication during rotations, movement, falling, lock/ready transitions, and game over
+- planner activity timestamps/latency so LLM waits are visible as planning rather than a frozen emulator
 
-Not implemented yet: rendered live framebuffer publication, real-time/watchable pacing, the public spectator, the private operator/session API, MCP, deeper-than-preview search, or a provider-specific Structured Outputs adapter.
+Not implemented yet: the private authenticated operator/session API and UI, the separate public spectator, durable session history/artifact retention, MCP, deeper-than-preview search, or a provider-specific Structured Outputs adapter.
 
 ## Run
 
@@ -101,7 +96,7 @@ go run ./cmd/gamepilot \
 
 ### Programmatic live sessions
 
-The long-lived runtime is a Go package rather than a second emulator implementation. A server can start a session and read copied snapshots while the owner goroutine runs the normal profile/planner/controller loop:
+The long-lived runtime is a Go package rather than a second emulator implementation. A server can start a session and read copied snapshots/frames while the owner goroutine runs the normal profile/planner/controller loop:
 
 ```go
 manager := sessions.NewTetrisManager(nil)
@@ -111,12 +106,31 @@ id, err := manager.Start(sessions.LaunchConfig{
     Planner:      "lookahead",
     MoveLimit:    25,
     RecordReplay: true,
+    Pacing:       sessions.PacingRealtime,
 })
 ```
 
-`Manager.Snapshot`, `List`, `Stop`, `Wait`, and `Replay` do not expose the emulator. See [`docs/live-sessions.md`](docs/live-sessions.md).
+Use `PacingFast` for unthrottled/test-style execution and `PacingRealtime` for human-observable sessions. The realtime mode delays wall clock only; it does not add/remove emulator frames or change controller input boundaries.
 
-Rendered Game Boy frames are intentionally **not** part of this slice yet: the current production Tetris session adapter still uses the memory-only emulator path. Frame publication is the next live-product issue.
+Readers use copied state only:
+
+```text
+Manager.Snapshot(id)
+Manager.Frame(id)
+Manager.List()
+Manager.Stop(id)
+Manager.Wait(ctx, id)
+Manager.Replay(id)
+```
+
+The read-only HTTP adapter exposes:
+
+```text
+GET /v1/sessions/{id}
+GET /v1/sessions/{id}/frame
+```
+
+See [`docs/live-sessions.md`](docs/live-sessions.md).
 
 ### Planner benchmark
 
@@ -147,7 +161,7 @@ go run ./cmd/gamepilot \
   -benchmark-out benchmark-all-25.json
 ```
 
-The summary reports pieces placed, lines cleared, top-out, final aggregate height/holes, average/max planner latency, LLM retries, and average candidate compression. The JSON report also retains each placement trace and final board. See [`docs/benchmark.md`](docs/benchmark.md) for the fairness model and limitations.
+The summary reports pieces placed, lines cleared, top-out, final aggregate height/holes, average/max planner latency, LLM retries, and average candidate compression. See [`docs/benchmark.md`](docs/benchmark.md) for the fairness model and limitations.
 
 ### Local/OpenAI-compatible LLM planner
 
