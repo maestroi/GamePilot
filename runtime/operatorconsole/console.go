@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"strings"
 )
 
 //go:embed static/*
@@ -25,25 +26,31 @@ func NewHandler(api http.Handler) (http.Handler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("operatorconsole: load embedded assets: %w", err)
 	}
-
 	files := http.FileServer(http.FS(staticFS))
-	mux := http.NewServeMux()
-	mux.Handle("/v1/", api)
-	mux.HandleFunc("GET /", func(res http.ResponseWriter, req *http.Request) {
-		if req.URL.Path != "/" {
-			http.NotFound(res, req)
+
+	dispatch := http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
+		if strings.HasPrefix(req.URL.Path, "/v1/") {
+			api.ServeHTTP(res, req)
 			return
 		}
-		serveAsset(res, req, files, "/index.html", "no-store")
-	})
-	mux.HandleFunc("GET /app.js", func(res http.ResponseWriter, req *http.Request) {
-		serveAsset(res, req, files, "/app.js", "no-cache")
-	})
-	mux.HandleFunc("GET /styles.css", func(res http.ResponseWriter, req *http.Request) {
-		serveAsset(res, req, files, "/styles.css", "no-cache")
+		if req.Method != http.MethodGet {
+			res.Header().Set("Allow", http.MethodGet)
+			http.Error(res, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+			return
+		}
+		switch req.URL.Path {
+		case "/":
+			serveAsset(res, req, files, "/index.html", "no-store")
+		case "/app.js":
+			serveAsset(res, req, files, "/app.js", "no-cache")
+		case "/styles.css":
+			serveAsset(res, req, files, "/styles.css", "no-cache")
+		default:
+			http.NotFound(res, req)
+		}
 	})
 
-	return securityHeaders(mux), nil
+	return securityHeaders(dispatch), nil
 }
 
 func serveAsset(res http.ResponseWriter, req *http.Request, files http.Handler, path, cacheControl string) {
