@@ -26,7 +26,18 @@ func NewHandler(api http.Handler) (http.Handler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("operatorconsole: load embedded assets: %w", err)
 	}
-	files := http.FileServer(http.FS(staticFS))
+	index, err := fs.ReadFile(staticFS, "index.html")
+	if err != nil {
+		return nil, fmt.Errorf("operatorconsole: read index: %w", err)
+	}
+	app, err := fs.ReadFile(staticFS, "app.js")
+	if err != nil {
+		return nil, fmt.Errorf("operatorconsole: read app: %w", err)
+	}
+	styles, err := fs.ReadFile(staticFS, "styles.css")
+	if err != nil {
+		return nil, fmt.Errorf("operatorconsole: read styles: %w", err)
+	}
 
 	dispatch := http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
 		if strings.HasPrefix(req.URL.Path, "/v1/") {
@@ -40,11 +51,11 @@ func NewHandler(api http.Handler) (http.Handler, error) {
 		}
 		switch req.URL.Path {
 		case "/":
-			serveAsset(res, req, files, "/index.html", "no-store")
+			serveAsset(res, index, "text/html; charset=utf-8", "no-store")
 		case "/app.js":
-			serveAsset(res, req, files, "/app.js", "no-cache")
+			serveAsset(res, app, "text/javascript; charset=utf-8", "no-cache")
 		case "/styles.css":
-			serveAsset(res, req, files, "/styles.css", "no-cache")
+			serveAsset(res, styles, "text/css; charset=utf-8", "no-cache")
 		default:
 			http.NotFound(res, req)
 		}
@@ -53,13 +64,12 @@ func NewHandler(api http.Handler) (http.Handler, error) {
 	return securityHeaders(dispatch), nil
 }
 
-func serveAsset(res http.ResponseWriter, req *http.Request, files http.Handler, path, cacheControl string) {
-	clone := req.Clone(req.Context())
-	urlCopy := *req.URL
-	urlCopy.Path = path
-	clone.URL = &urlCopy
+func serveAsset(res http.ResponseWriter, content []byte, contentType, cacheControl string) {
+	res.Header().Set("Content-Type", contentType)
 	res.Header().Set("Cache-Control", cacheControl)
-	files.ServeHTTP(res, clone)
+	res.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
+	res.WriteHeader(http.StatusOK)
+	_, _ = res.Write(content)
 }
 
 func securityHeaders(next http.Handler) http.Handler {
