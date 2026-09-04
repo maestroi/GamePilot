@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/maestroi/GamePilot/emulator/session"
@@ -23,14 +24,17 @@ func main() {
 
 func run() error {
 	romPath := flag.String("rom", "", "path to the supported Tetris Rev 1 ROM")
-	planner := flag.String("planner", "observe", "mode: observe, place, heuristic, lookahead, llm, or replay")
+	planner := flag.String("planner", "observe", "mode: observe, place, heuristic, lookahead, llm, replay, or benchmark")
 	rotation := flag.Int("rotation", 0, "raw Tetris rotation 0..3 for -planner place")
 	column := flag.Int("column", 0, "leftmost occupied board column for -planner place")
-	pieces := flag.Int("pieces", 25, "number of placements to execute for -planner heuristic, lookahead, or llm")
+	pieces := flag.Int("pieces", 25, "number of placements to execute or benchmark")
 	replayOut := flag.String("replay-out", "", "write a deterministic replay JSON file for place, heuristic, lookahead, or llm mode")
 	replayIn := flag.String("replay-in", "", "replay JSON file to verify with -planner replay")
+	benchmarkReplay := flag.String("benchmark-replay", "", "replay whose fixed piece sequence is used by -planner benchmark")
+	benchmarkPlanners := flag.String("benchmark-planners", "heuristic,lookahead", "comma-separated planners for benchmark: heuristic,lookahead,llm")
+	benchmarkOut := flag.String("benchmark-out", "", "write benchmark JSON report to this path")
 	llmBaseURL := flag.String("llm-base-url", envOr("OPENAI_BASE_URL", "http://localhost:1234/v1"), "OpenAI-compatible base URL, normally ending in /v1")
-	llmModel := flag.String("llm-model", os.Getenv("OPENAI_MODEL"), "model name for -planner llm")
+	llmModel := flag.String("llm-model", os.Getenv("OPENAI_MODEL"), "model name for -planner llm or LLM benchmark")
 	llmAPIKeyEnv := flag.String("llm-api-key-env", "OPENAI_API_KEY", "environment variable containing the API key; use an empty value for keyless local servers")
 	llmTimeout := flag.Duration("llm-timeout", 60*time.Second, "HTTP timeout for each LLM request")
 	llmThinking := flag.String("llm-thinking", "off", "thinking mode for compatible servers: off, auto, or on")
@@ -38,29 +42,15 @@ func run() error {
 	llmCandidates := flag.Int("llm-candidates", tetris.DefaultLLMShortlistSize, "maximum two-ply candidates included in each LLM prompt")
 	flag.Parse()
 
-	if *romPath == "" {
+	validPlanner := *planner == "observe" || *planner == "place" || *planner == "heuristic" || *planner == "lookahead" || *planner == "llm" || *planner == "replay" || *planner == "benchmark"
+	if !validPlanner {
+		return fmt.Errorf("planner %q is not implemented; use -planner observe, place, heuristic, lookahead, llm, replay, or benchmark", *planner)
+	}
+	if *planner != "benchmark" && *romPath == "" {
 		return errors.New("-rom is required")
 	}
-	if *planner != "observe" && *planner != "place" && *planner != "heuristic" && *planner != "lookahead" && *planner != "llm" && *planner != "replay" {
-		return fmt.Errorf("planner %q is not implemented; use -planner observe, place, heuristic, lookahead, llm, or replay", *planner)
-	}
-	if (*planner == "heuristic" || *planner == "lookahead" || *planner == "llm") && *pieces < 1 {
+	if (*planner == "heuristic" || *planner == "lookahead" || *planner == "llm" || *planner == "benchmark") && *pieces < 1 {
 		return fmt.Errorf("-pieces must be at least 1 for -planner %s", *planner)
-	}
-	if *planner == "llm" && *llmModel == "" {
-		return fmt.Errorf("-llm-model is required for -planner llm (or set OPENAI_MODEL)")
-	}
-	if *planner == "llm" && *llmBaseURL == "" {
-		return fmt.Errorf("-llm-base-url is required for -planner llm (or set OPENAI_BASE_URL)")
-	}
-	if *planner == "llm" && *llmThinking != "off" && *llmThinking != "auto" && *llmThinking != "on" {
-		return fmt.Errorf("-llm-thinking must be off, auto, or on")
-	}
-	if *planner == "llm" && *llmMaxTokens < 1 {
-		return fmt.Errorf("-llm-max-tokens must be at least 1")
-	}
-	if *planner == "llm" && *llmCandidates < 1 {
-		return fmt.Errorf("-llm-candidates must be at least 1")
 	}
 	if *planner == "replay" && *replayIn == "" {
 		return fmt.Errorf("-replay-in is required for -planner replay")
@@ -68,8 +58,53 @@ func run() error {
 	if *planner != "replay" && *replayIn != "" {
 		return fmt.Errorf("-replay-in is only valid with -planner replay")
 	}
+	if *planner == "benchmark" && *benchmarkReplay == "" {
+		return fmt.Errorf("-benchmark-replay is required for -planner benchmark")
+	}
+	if *planner != "benchmark" && *benchmarkReplay != "" {
+		return fmt.Errorf("-benchmark-replay is only valid with -planner benchmark")
+	}
+	if *planner != "benchmark" && *benchmarkOut != "" {
+		return fmt.Errorf("-benchmark-out is only valid with -planner benchmark")
+	}
 	if *replayOut != "" && *planner != "place" && *planner != "heuristic" && *planner != "lookahead" && *planner != "llm" {
 		return fmt.Errorf("-replay-out is only valid with -planner place, heuristic, lookahead, or llm")
+	}
+
+	var benchPlanners []tetris.BenchmarkPlanner
+	benchmarkUsesLLM := false
+	if *planner == "benchmark" {
+		var err error
+		benchPlanners, err = parseBenchmarkPlanners(*benchmarkPlanners)
+		if err != nil {
+			return err
+		}
+		benchmarkUsesLLM = containsBenchmarkPlanner(benchPlanners, tetris.BenchmarkLLM)
+	}
+	usesLLM := *planner == "llm" || benchmarkUsesLLM
+	if usesLLM && *llmModel == "" {
+		return fmt.Errorf("-llm-model is required for LLM planning (or set OPENAI_MODEL)")
+	}
+	if usesLLM && *llmBaseURL == "" {
+		return fmt.Errorf("-llm-base-url is required for LLM planning (or set OPENAI_BASE_URL)")
+	}
+	if usesLLM && *llmThinking != "off" && *llmThinking != "auto" && *llmThinking != "on" {
+		return fmt.Errorf("-llm-thinking must be off, auto, or on")
+	}
+	if usesLLM && *llmMaxTokens < 1 {
+		return fmt.Errorf("-llm-max-tokens must be at least 1")
+	}
+	if usesLLM && *llmCandidates < 1 {
+		return fmt.Errorf("-llm-candidates must be at least 1")
+	}
+
+	ctx := context.Background()
+	if *planner == "benchmark" {
+		var llmClient *openaiplanner.Client
+		if benchmarkUsesLLM {
+			llmClient = configuredLLMClient(*llmBaseURL, *llmModel, *llmAPIKeyEnv, *llmTimeout, *llmThinking, *llmMaxTokens)
+		}
+		return runBenchmarkMode(ctx, *benchmarkReplay, *benchmarkOut, benchPlanners, *pieces, llmClient, *llmCandidates, *llmModel, *llmBaseURL, *llmThinking, *llmMaxTokens)
 	}
 
 	sess, err := session.OpenROM(*romPath)
@@ -90,7 +125,6 @@ func run() error {
 	fmt.Printf("Profile: %s\n", profile.ID())
 	fmt.Printf("Planner: %s\n", *planner)
 
-	ctx := context.Background()
 	if err := tetris.StartTypeAZero(ctx, sess.Emulator()); err != nil {
 		return err
 	}
@@ -181,23 +215,7 @@ func run() error {
 			}
 		}
 	case "llm":
-		apiKey := ""
-		if *llmAPIKeyEnv != "" {
-			apiKey = os.Getenv(*llmAPIKeyEnv)
-		}
-		client := openaiplanner.NewClient(*llmBaseURL, *llmModel, apiKey)
-		client.HTTPClient.Timeout = *llmTimeout
-		client.MaxTokens = *llmMaxTokens
-		switch *llmThinking {
-		case "off":
-			thinking := false
-			client.Thinking = &thinking
-		case "on":
-			thinking := true
-			client.Thinking = &thinking
-		case "auto":
-			client.Thinking = nil
-		}
+		client := configuredLLMClient(*llmBaseURL, *llmModel, *llmAPIKeyEnv, *llmTimeout, *llmThinking, *llmMaxTokens)
 		fmt.Printf("LLM: model=%s base_url=%s thinking=%s max_tokens=%d candidates=%d\n", *llmModel, *llmBaseURL, *llmThinking, *llmMaxTokens, *llmCandidates)
 		obs = initial
 		for move := 1; move <= *pieces && !obs.GameOver; move++ {
@@ -255,6 +273,129 @@ func run() error {
 	return encoder.Encode(obs)
 }
 
+func runBenchmarkMode(ctx context.Context, replayPath, outPath string, planners []tetris.BenchmarkPlanner, pieces int, llmClient *openaiplanner.Client, llmCandidates int, llmModel, llmBaseURL, llmThinking string, llmMaxTokens int) error {
+	replay, err := readReplayFile(replayPath)
+	if err != nil {
+		return err
+	}
+	config := tetris.BenchmarkConfig{
+		Planners:         planners,
+		PieceLimit:       pieces,
+		LLMShortlistSize: llmCandidates,
+	}
+	if llmClient != nil {
+		config.LLM = llmClient
+	}
+	report, err := tetris.BenchmarkReplay(ctx, replay, config)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Profile: %s\n", report.Profile)
+	fmt.Printf("Planner: benchmark\n")
+	fmt.Printf("Benchmark replay: %s (%d source moves)\n", replayPath, report.SourceMoves)
+	fmt.Printf("Scenario: %s (%d moves)\n", report.Scenario.Hash, report.Scenario.Moves)
+	fmt.Printf("Benchmark planners: %s\n", benchmarkPlannerNames(planners))
+	if llmClient != nil {
+		fmt.Printf("LLM: model=%s base_url=%s thinking=%s max_tokens=%d candidates=%d\n", llmModel, llmBaseURL, llmThinking, llmMaxTokens, llmCandidates)
+	}
+	fmt.Println()
+	fmt.Printf("%-10s %6s %5s %7s %7s %5s %10s %10s %8s %11s\n", "planner", "pieces", "lines", "topout", "height", "holes", "avg_plan", "max_plan", "retries", "candidates")
+	for _, result := range report.Results {
+		avgPlan := time.Duration(0)
+		if result.PlanCalls > 0 {
+			avgPlan = time.Duration(result.PlanNanoseconds / int64(result.PlanCalls))
+		}
+		candidateSummary := "-"
+		if result.Planner == tetris.BenchmarkLLM && result.PlanCalls > 0 {
+			candidateSummary = fmt.Sprintf("%.1f/%.1f", float64(result.CandidatesShown)/float64(result.PlanCalls), float64(result.TotalCandidates)/float64(result.PlanCalls))
+		}
+		fmt.Printf(
+			"%-10s %6d %5d %7t %7d %5d %10s %10s %8d %11s\n",
+			result.Planner,
+			result.Pieces,
+			result.LinesCleared,
+			result.TopOut,
+			result.AggregateHeight,
+			result.Holes,
+			avgPlan,
+			time.Duration(result.MaxPlanNanoseconds),
+			result.LLMRetries,
+			candidateSummary,
+		)
+	}
+
+	if outPath != "" {
+		if err := writeBenchmarkFile(outPath, report); err != nil {
+			return err
+		}
+		fmt.Printf("\nBenchmark written: %s\n", outPath)
+	}
+	return nil
+}
+
+func configuredLLMClient(baseURL, model, apiKeyEnv string, timeout time.Duration, thinking string, maxTokens int) *openaiplanner.Client {
+	apiKey := ""
+	if apiKeyEnv != "" {
+		apiKey = os.Getenv(apiKeyEnv)
+	}
+	client := openaiplanner.NewClient(baseURL, model, apiKey)
+	client.HTTPClient.Timeout = timeout
+	client.MaxTokens = maxTokens
+	switch thinking {
+	case "off":
+		value := false
+		client.Thinking = &value
+	case "on":
+		value := true
+		client.Thinking = &value
+	case "auto":
+		client.Thinking = nil
+	}
+	return client
+}
+
+func parseBenchmarkPlanners(raw string) ([]tetris.BenchmarkPlanner, error) {
+	parts := strings.Split(raw, ",")
+	planners := make([]tetris.BenchmarkPlanner, 0, len(parts))
+	for _, part := range parts {
+		name := strings.TrimSpace(part)
+		switch name {
+		case string(tetris.BenchmarkHeuristic):
+			planners = append(planners, tetris.BenchmarkHeuristic)
+		case string(tetris.BenchmarkLookahead):
+			planners = append(planners, tetris.BenchmarkLookahead)
+		case string(tetris.BenchmarkLLM):
+			planners = append(planners, tetris.BenchmarkLLM)
+		case "":
+			return nil, fmt.Errorf("-benchmark-planners contains an empty planner name")
+		default:
+			return nil, fmt.Errorf("unsupported benchmark planner %q; use heuristic, lookahead, or llm", name)
+		}
+	}
+	if len(planners) == 0 {
+		return nil, fmt.Errorf("-benchmark-planners must contain at least one planner")
+	}
+	return planners, nil
+}
+
+func containsBenchmarkPlanner(planners []tetris.BenchmarkPlanner, target tetris.BenchmarkPlanner) bool {
+	for _, planner := range planners {
+		if planner == target {
+			return true
+		}
+	}
+	return false
+}
+
+func benchmarkPlannerNames(planners []tetris.BenchmarkPlanner) string {
+	names := make([]string, len(planners))
+	for i, planner := range planners {
+		names[i] = string(planner)
+	}
+	return strings.Join(names, ",")
+}
+
 func readReplayFile(path string) (tetris.Replay, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -280,6 +421,21 @@ func writeReplayFile(path string, replay tetris.Replay) error {
 	}
 	if err := file.Close(); err != nil {
 		return fmt.Errorf("close replay %q: %w", path, err)
+	}
+	return nil
+}
+
+func writeBenchmarkFile(path string, report tetris.BenchmarkReport) error {
+	file, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("create benchmark %q: %w", path, err)
+	}
+	if err := tetris.WriteBenchmarkReport(file, report); err != nil {
+		file.Close()
+		return fmt.Errorf("write benchmark %q: %w", path, err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close benchmark %q: %w", path, err)
 	}
 	return nil
 }
