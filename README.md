@@ -31,6 +31,7 @@ long-lived mode
   -> copied observation/decision snapshots
   -> latest encoded Game Boy frame
   -> optional realtime presentation pacing
+  -> private authenticated operator API
   -> cancellation + terminal status
   -> finalized replay bytes
 ```
@@ -63,8 +64,11 @@ Implemented now:
 - realtime controller presentation near native DMG cadence (~59.7 Hz) without changing emulator frames/input boundaries
 - sampled intermediate frame publication during rotations, movement, falling, lock/ready transitions, and game over
 - planner activity timestamps/latency so LLM waits are visible as planning rather than a frozen emulator
+- `runtime/operatorapi` private Bearer-authenticated launch/list/get/frame/stop/delete control plane
+- allowlisted ROM/profile/planner/model launch configuration with no raw filesystem paths or provider secrets in requests
+- terminal-only retained-session deletion, structured API errors, mutation body/rate/time limits, and auth-disabled route removal
 
-Not implemented yet: the private authenticated operator/session API and UI, the separate public spectator, durable session history/artifact retention, MCP, deeper-than-preview search, or a provider-specific Structured Outputs adapter.
+Not implemented yet: the private browser operator console, the separate public spectator, durable session history/artifact retention, MCP, deeper-than-preview search, or a provider-specific Structured Outputs adapter.
 
 ## Run
 
@@ -121,6 +125,7 @@ Manager.List()
 Manager.Stop(id)
 Manager.Wait(ctx, id)
 Manager.Replay(id)
+Manager.Delete(id)  # terminal history only
 ```
 
 The read-only HTTP adapter exposes:
@@ -131,6 +136,28 @@ GET /v1/sessions/{id}/frame
 ```
 
 See [`docs/live-sessions.md`](docs/live-sessions.md).
+
+### Private operator API
+
+`runtime/operatorapi` provides the separate authenticated control plane intended for the private browser operator console. Every mounted route requires a deployment-configured Bearer token. If the token is empty, the handler mounts no operator routes and returns `404` for the whole surface.
+
+The browser receives only server-configured aliases for ROMs, profiles/planners, and optional model choices. Raw ROM paths, model provider URLs, and credentials are not request fields.
+
+Private routes:
+
+```text
+GET    /v1/config
+GET    /v1/sessions
+GET    /v1/sessions/{id}
+GET    /v1/sessions/{id}/frame
+POST   /v1/sessions
+POST   /v1/sessions/{id}/stop
+DELETE /v1/sessions/{id}
+```
+
+Launch requests default to `realtime` pacing on this surface so a future operator console gets watchable play without changing the lower-level session manager's `fast` default. Delete only removes terminal retained history; active sessions must be stopped first.
+
+See [`docs/operator-api.md`](docs/operator-api.md) for the trust model, catalog setup, request shapes, limits, and structured errors.
 
 ### Planner benchmark
 
@@ -187,4 +214,4 @@ The model never sends emulator inputs. GamePilot computes and ranks deterministi
 
 `-replay-out` works with `place`, `heuristic`, `lookahead`, and `llm`. Replay verification does not invoke any planner.
 
-See [`docs/architecture.md`](docs/architecture.md), [`docs/live-sessions.md`](docs/live-sessions.md), [`docs/benchmark.md`](docs/benchmark.md), [`docs/lookahead.md`](docs/lookahead.md), [`docs/llm-planner.md`](docs/llm-planner.md), [`docs/replay.md`](docs/replay.md), and [`docs/tetris-rev1.md`](docs/tetris-rev1.md).
+See [`docs/architecture.md`](docs/architecture.md), [`docs/live-sessions.md`](docs/live-sessions.md), [`docs/operator-api.md`](docs/operator-api.md), [`docs/benchmark.md`](docs/benchmark.md), [`docs/lookahead.md`](docs/lookahead.md), [`docs/llm-planner.md`](docs/llm-planner.md), [`docs/replay.md`](docs/replay.md), and [`docs/tetris-rev1.md`](docs/tetris-rev1.md).
