@@ -1,8 +1,8 @@
 // Package sessions owns long-lived GamePilot run lifecycle above emulator/profile code.
 //
 // A managed session has exactly one goroutine driving its Runner. Readers only
-// receive copied snapshots and replay bytes; they never receive an emulator
-// pointer or another mutable object owned by the runner goroutine.
+// receive copied snapshots, frames, and replay bytes; they never receive an
+// emulator pointer or another mutable object owned by the runner goroutine.
 package sessions
 
 import (
@@ -29,8 +29,9 @@ const (
 )
 
 var (
-	ErrSessionNotFound = errors.New("sessions: session not found")
+	ErrSessionNotFound  = errors.New("sessions: session not found")
 	ErrReplayUnavailable = errors.New("sessions: replay unavailable")
+	ErrFrameUnavailable  = errors.New("sessions: frame unavailable")
 )
 
 // PlannerOptions contains safe planner-level launch knobs. Model is intended to
@@ -46,38 +47,55 @@ type PlannerOptions struct {
 // server filesystem path. A future private API will resolve public ROM aliases
 // to this internal path before starting a session.
 type LaunchConfig struct {
-	ROMPath       string         `json:"-"`
-	Profile       string         `json:"profile"`
-	Planner       string         `json:"planner"`
-	MoveLimit     int            `json:"move_limit,omitempty"` // 0 means run until terminal/cancelled.
-	RecordReplay  bool           `json:"record_replay"`
+	ROMPath        string         `json:"-"`
+	Profile        string         `json:"profile"`
+	Planner        string         `json:"planner"`
+	MoveLimit      int            `json:"move_limit,omitempty"` // 0 means run until terminal/cancelled.
+	RecordReplay   bool           `json:"record_replay"`
 	PlannerOptions PlannerOptions `json:"planner_options,omitempty"`
+}
+
+// Frame is one immutable encoded framebuffer publication. Data is kept outside
+// Snapshot JSON so browser/API layers can serve it as an image response rather
+// than base64-expanding every state poll.
+type Frame struct {
+	Sequence      uint64    `json:"sequence"`
+	EmulatorFrame uint64    `json:"emulator_frame"`
+	Width         int       `json:"width"`
+	Height        int       `json:"height"`
+	ContentType   string    `json:"content_type"`
+	CapturedAt    time.Time `json:"captured_at"`
+	Data          []byte    `json:"-"`
 }
 
 // Snapshot is the immutable read model exposed by Manager. Observation and
 // Decision are profile/planner-specific JSON payloads so this lifecycle layer
 // does not need to know Tetris board geometry or future games' action schemas.
 type Snapshot struct {
-	ID             string          `json:"id"`
-	Status         Status          `json:"status"`
-	Config         LaunchConfig    `json:"config"`
-	Profile        string          `json:"profile,omitempty"`
-	ROMSHA256      string          `json:"rom_sha256,omitempty"`
-	CartridgeTitle string          `json:"cartridge_title,omitempty"`
-	Frame          uint64          `json:"frame"`
-	Moves          int             `json:"moves"`
-	Observation    json.RawMessage `json:"observation,omitempty"`
-	Decision       json.RawMessage `json:"decision,omitempty"`
-	PlannerActivity string         `json:"planner_activity,omitempty"`
-	Reason         string          `json:"reason,omitempty"`
-	Error          string          `json:"error,omitempty"`
-	CreatedAt      time.Time       `json:"created_at"`
-	StartedAt      time.Time       `json:"started_at,omitempty"`
-	EndedAt        time.Time       `json:"ended_at,omitempty"`
+	ID              string          `json:"id"`
+	Status          Status          `json:"status"`
+	Config          LaunchConfig    `json:"config"`
+	Profile         string          `json:"profile,omitempty"`
+	ROMSHA256       string          `json:"rom_sha256,omitempty"`
+	CartridgeTitle  string          `json:"cartridge_title,omitempty"`
+	Frame           uint64          `json:"frame"`
+	Moves           int             `json:"moves"`
+	Observation     json.RawMessage `json:"observation,omitempty"`
+	Decision        json.RawMessage `json:"decision,omitempty"`
+	PlannerActivity string          `json:"planner_activity,omitempty"`
+	Sequence        uint64          `json:"sequence"`
+	FrameSequence   uint64          `json:"frame_sequence,omitempty"`
+	FrameAvailable  bool            `json:"frame_available"`
+	Reason          string          `json:"reason,omitempty"`
+	Error           string          `json:"error,omitempty"`
+	CreatedAt       time.Time       `json:"created_at"`
+	StartedAt       time.Time       `json:"started_at,omitempty"`
+	UpdatedAt       time.Time       `json:"updated_at"`
+	EndedAt         time.Time       `json:"ended_at,omitempty"`
 }
 
 // Update is published by the single runner goroutine at meaningful boundaries.
-// Manager copies the JSON fields before making them visible to readers.
+// Manager copies JSON/image fields before making them visible to readers.
 type Update struct {
 	Profile         string
 	ROMSHA256       string
@@ -87,6 +105,7 @@ type Update struct {
 	Observation     json.RawMessage
 	Decision        json.RawMessage
 	PlannerActivity string
+	Image           *Frame
 }
 
 // Result is the terminal runner output. Replay is an encoded profile replay,
@@ -128,6 +147,7 @@ type managedSession struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 	replay []byte
+	image  *Frame
 }
 
 func NewManager(factory RunnerFactory) *Manager {
@@ -175,7 +195,9 @@ func (m *Manager) Start(config LaunchConfig) (string, error) {
 			Status:    StatusQueued,
 			Config:    config,
 			Profile:   config.Profile,
+			Sequence:  1,
 			CreatedAt: created,
+			UpdatedAt: created,
 		},
 		cancel: cancel,
 		done:   make(chan struct{}),
@@ -214,28 +236,34 @@ func validateLaunchConfig(config LaunchConfig) error {
 }
 
 func (m *Manager) run(ctx context.Context, s *managedSession, runner Runner) {
+	now := m.now()
 	s.mu.Lock()
 	if s.snap.Status == StatusQueued {
 		s.snap.Status = StatusStarting
-		s.snap.StartedAt = m.now()
+		s.snap.StartedAt = now
 	}
 	if s.snap.StartedAt.IsZero() {
-		s.snap.StartedAt = m.now()
+		s.snap.StartedAt = now
 	}
 	if s.snap.Status == StatusStarting {
 		s.snap.Status = StatusRunning
 	}
+	s.snap.Sequence++
+	s.snap.UpdatedAt = now
 	s.mu.Unlock()
 
 	result, err := runner.Run(ctx, func(update Update) {
-		s.applyUpdate(update)
+		s.applyUpdate(update, m.now())
 	})
 
+	now = m.now()
 	s.mu.Lock()
 	if len(result.Replay) > 0 {
 		s.replay = append([]byte(nil), result.Replay...)
 	}
-	s.snap.EndedAt = m.now()
+	s.snap.EndedAt = now
+	s.snap.UpdatedAt = now
+	s.snap.Sequence++
 	s.snap.PlannerActivity = ""
 	if err == nil {
 		s.snap.Status = StatusDone
@@ -258,7 +286,7 @@ func (m *Manager) run(ctx context.Context, s *managedSession, runner Runner) {
 	close(s.done)
 }
 
-func (s *managedSession) applyUpdate(update Update) {
+func (s *managedSession) applyUpdate(update Update, now time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if terminal(s.snap.Status) {
@@ -278,6 +306,18 @@ func (s *managedSession) applyUpdate(update Update) {
 	s.snap.Observation = cloneJSON(update.Observation)
 	s.snap.Decision = cloneJSON(update.Decision)
 	s.snap.PlannerActivity = update.PlannerActivity
+	s.snap.Sequence++
+	s.snap.UpdatedAt = now
+	if update.Image != nil {
+		image := cloneFrame(*update.Image)
+		image.Sequence = s.snap.Sequence
+		if image.CapturedAt.IsZero() {
+			image.CapturedAt = now
+		}
+		s.image = &image
+		s.snap.FrameSequence = image.Sequence
+		s.snap.FrameAvailable = true
+	}
 }
 
 func (m *Manager) Stop(id string) error {
@@ -291,6 +331,8 @@ func (m *Manager) Stop(id string) error {
 		return nil
 	}
 	s.snap.Status = StatusStopping
+	s.snap.Sequence++
+	s.snap.UpdatedAt = m.now()
 	cancel := s.cancel
 	s.mu.Unlock()
 	cancel()
@@ -324,6 +366,22 @@ func (m *Manager) List() []Snapshot {
 		return out[i].CreatedAt.Before(out[j].CreatedAt)
 	})
 	return out
+}
+
+// Frame returns a defensive copy of the most recently published encoded image.
+// Only one image is retained per session, so slow readers cannot backpressure or
+// cause unbounded buffering in the emulator owner goroutine.
+func (m *Manager) Frame(id string) (Frame, error) {
+	s, err := m.lookup(id)
+	if err != nil {
+		return Frame{}, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.image == nil || len(s.image.Data) == 0 {
+		return Frame{}, ErrFrameUnavailable
+	}
+	return cloneFrame(*s.image), nil
 }
 
 func (m *Manager) Replay(id string) ([]byte, error) {
@@ -401,6 +459,14 @@ func cloneJSON(raw json.RawMessage) json.RawMessage {
 		return nil
 	}
 	return append(json.RawMessage(nil), raw...)
+}
+
+func cloneFrame(frame Frame) Frame {
+	copy := frame
+	if len(frame.Data) > 0 {
+		copy.Data = append([]byte(nil), frame.Data...)
+	}
+	return copy
 }
 
 func randomID() (string, error) {
