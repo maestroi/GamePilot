@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>GamePilot Operator</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">PRIVATE CONTROL PLANE</p>
+        <h1>GamePilot Operator</h1>
+      </div>
+      <div class="connection-box">
+        <span id="connection-dot" class="connection-dot" aria-hidden="true"></span>
+        <span id="connection-label">Disconnected</span>
+        <button id="disconnect-button" class="button ghost hidden" type="button">Disconnect</button>
+      </div>
+    </header>
+
+    <section id="auth-panel" class="auth-panel panel">
+      <div>
+        <p class="eyebrow">OPERATOR AUTHENTICATION</p>
+        <h2>Connect to the private API</h2>
+        <p class="muted">Enter the deployment-configured Bearer token. It stays in this browser tab only.</p>
+      </div>
+      <form id="auth-form" class="auth-form">
+        <label>
+          <span>Operator token</span>
+          <input id="token-input" name="token" type="password" autocomplete="current-password" required>
+        </label>
+        <button class="button primary" type="submit">Connect</button>
+      </form>
+      <p id="auth-error" class="error-text" role="alert"></p>
+    </section>
+
+    <main id="workspace" class="workspace hidden">
+      <aside class="left-column">
+        <section class="panel launch-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">NEW SESSION</p>
+              <h2>Launch</h2>
+            </div>
+          </div>
+          <form id="launch-form" class="stack-form">
+            <label>
+              <span>ROM</span>
+              <select id="rom-select" required></select>
+            </label>
+            <label>
+              <span>Profile</span>
+              <select id="profile-select" required></select>
+            </label>
+            <label>
+              <span>Planner</span>
+              <select id="planner-select" required></select>
+            </label>
+            <label id="model-field" class="hidden">
+              <span>Model</span>
+              <select id="model-select"></select>
+            </label>
+            <label id="shortlist-field" class="hidden">
+              <span>Shortlist size</span>
+              <input id="shortlist-input" type="number" min="1" value="10">
+            </label>
+            <label>
+              <span>Move limit <small>(0 = continuous)</small></span>
+              <input id="move-limit-input" type="number" min="0" value="0">
+            </label>
+            <label>
+              <span>Pacing</span>
+              <select id="pacing-select"></select>
+            </label>
+            <label class="check-row">
+              <input id="record-replay-input" type="checkbox" checked>
+              <span>Record replay</span>
+            </label>
+            <button id="launch-button" class="button primary full" type="submit">Launch session</button>
+          </form>
+          <p id="launch-error" class="error-text" role="alert"></p>
+        </section>
+
+        <section class="panel sessions-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">RUNTIME</p>
+              <h2>Sessions</h2>
+            </div>
+            <span id="session-count" class="count-badge">0</span>
+          </div>
+          <div id="session-list" class="session-list">
+            <p class="empty-state">No sessions yet.</p>
+          </div>
+        </section>
+      </aside>
+
+      <section class="detail-column">
+        <section id="empty-detail" class="panel empty-detail">
+          <p class="eyebrow">SESSION DETAIL</p>
+          <h2>Select a session</h2>
+          <p class="muted">Launch a run or choose one from the session list to inspect live emulator and planner state.</p>
+        </section>
+
+        <div id="session-detail" class="detail-stack hidden">
+          <section class="panel detail-header">
+            <div>
+              <div class="detail-title-row">
+                <span id="detail-status" class="status-pill">—</span>
+                <span id="detail-id" class="mono muted">—</span>
+              </div>
+              <h2 id="detail-title">Session</h2>
+              <p id="detail-subtitle" class="muted">—</p>
+            </div>
+            <div class="action-row">
+              <button id="stop-button" class="button danger hidden" type="button">Stop</button>
+              <button id="replay-button" class="button secondary hidden" type="button">Download replay</button>
+              <button id="delete-button" class="button ghost hidden" type="button">Delete</button>
+            </div>
+          </section>
+
+          <section class="live-grid">
+            <article class="panel screen-panel">
+              <div class="panel-heading compact">
+                <div>
+                  <p class="eyebrow">EMULATOR</p>
+                  <h3>Game Boy</h3>
+                </div>
+                <span id="frame-status" class="micro-status">Waiting for frame</span>
+              </div>
+              <div class="screen-bezel">
+                <img id="game-frame" alt="Live Game Boy framebuffer" class="game-frame hidden">
+                <div id="frame-placeholder" class="frame-placeholder">No frame published yet</div>
+              </div>
+            </article>
+
+            <article class="panel board-panel">
+              <div class="panel-heading compact">
+                <div>
+                  <p class="eyebrow">MEMORY-DERIVED STATE</p>
+                  <h3>Settled board</h3>
+                </div>
+                <span id="ready-state" class="micro-status">—</span>
+              </div>
+              <div class="board-wrap">
+                <div id="tetris-board" class="tetris-board" role="img" aria-label="Tetris settled board"></div>
+              </div>
+              <div class="piece-row">
+                <div class="piece-card">
+                  <span>Current</span>
+                  <strong id="current-piece">—</strong>
+                </div>
+                <div class="piece-card">
+                  <span>Next</span>
+                  <strong id="next-piece">—</strong>
+                </div>
+              </div>
+            </article>
+          </section>
+
+          <section class="metrics-grid">
+            <article class="metric-card panel"><span>Score</span><strong id="metric-score">—</strong></article>
+            <article class="metric-card panel"><span>Lines</span><strong id="metric-lines">—</strong></article>
+            <article class="metric-card panel"><span>Level</span><strong id="metric-level">—</strong></article>
+            <article class="metric-card panel"><span>Moves</span><strong id="metric-moves">—</strong></article>
+            <article class="metric-card panel"><span>Frame</span><strong id="metric-frame">—</strong></article>
+          </section>
+
+          <section class="inspector-grid">
+            <article class="panel">
+              <div class="panel-heading compact">
+                <div>
+                  <p class="eyebrow">PLANNER</p>
+                  <h3>Decision</h3>
+                </div>
+                <span id="planner-activity" class="micro-status">Idle</span>
+              </div>
+              <div class="decision-summary">
+                <div><span>Placement</span><strong id="placement-summary">—</strong></div>
+                <div><span>Latency</span><strong id="planner-latency">—</strong></div>
+              </div>
+              <details>
+                <summary>Raw decision JSON</summary>
+                <pre id="decision-json" class="json-box">—</pre>
+              </details>
+            </article>
+
+            <article class="panel">
+              <div class="panel-heading compact">
+                <div>
+                  <p class="eyebrow">EVENTS</p>
+                  <h3>Session activity</h3>
+                </div>
+                <span class="micro-status">latest 40</span>
+              </div>
+              <ol id="event-log" class="event-log">
+                <li class="empty-state">No events yet.</li>
+              </ol>
+            </article>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+  </div>
+</body>
+</html>
