@@ -17,12 +17,14 @@ Session runtime = long-lived lifecycle + copied read model + presentation pacing
 
 ```text
 GamePilot
-├── emulator/session   thin lifetime/checkpoint wrapper around pkg/gomeboy
-├── planner/openai     minimal OpenAI-compatible chat-completions transport
-├── profiles           minimal profile-selection boundary
-├── profiles/tetris    Tetris-specific addresses, semantics, planning, benchmark, controller, and replay state
-├── runtime/sessions   lifecycle, frame publication, pacing, read transport, and Tetris runner adapter
-└── cmd/gamepilot      runnable CLI and benchmark entrypoint
+├── emulator/session       thin lifetime/checkpoint wrapper around pkg/gomeboy
+├── planner/openai         minimal OpenAI-compatible chat-completions transport
+├── profiles               minimal profile-selection boundary
+├── profiles/tetris        Tetris-specific addresses, semantics, planning, benchmark, controller, and replay state
+├── runtime/sessions       lifecycle, frame publication, pacing, read transport, and Tetris runner adapter
+├── runtime/operatorapi    private authenticated session control plane and optional replay download
+├── runtime/operatorconsole embedded same-origin private browser operator UI
+└── cmd/gamepilot          runnable CLI and benchmark entrypoint
 ```
 
 The emulator session package does not recreate emulation primitives. Profiles and controllers use Gomeboy's public `StepFrame`/`StepFrames`, `Press`/`Release`, `Peek8`/`PeekInto`, `FrameCount`, `SaveState`/`LoadState`, cartridge metadata, ROM SHA-256, and framebuffer output directly.
@@ -47,7 +49,7 @@ One managed session goroutine is the only caller allowed to open, step, inspect,
 
 `runtime/sessions` stores profile observation and planner decision payloads as copied JSON plus one latest encoded framebuffer image. That keeps lifecycle/state management generic while leaving Tetris board/action semantics inside `profiles/tetris`. Slow readers may miss presentation frames, but there is no frame queue and therefore no observer backpressure.
 
-Internal ROM paths are excluded from serialized session snapshots. Model credentials/provider URLs are not part of session launch configuration; future private server code resolves safe aliases to those secrets outside the session read model.
+Internal ROM paths are excluded from serialized session snapshots. Model credentials/provider URLs are not part of session launch configuration; private server code resolves safe aliases to those secrets outside the session read model. `runtime/operatorapi` enforces the alias allowlists and Bearer-authenticated mutation/read boundary, while `runtime/operatorconsole` embeds only deployment-agnostic assets and delegates its `/v1/*` traffic back to that API.
 
 ## Deterministic loop
 
@@ -155,10 +157,10 @@ Completed:
 8. Long-lived session manager/runtime with cancellation, copied snapshots, replay finalization, multiple independent sessions, and a production Tetris runner.
 9. Rendered Gomeboy frame publication plus GET-only structured snapshot/frame transport.
 10. Watchable realtime session pacing and intermediate controller-frame publication.
+11. Private Bearer-authenticated session control API and embedded browser operator console (#9/#10).
 
 Next live-product slices:
 
-11. Add private authenticated session control API and operator console (#9/#10).
 12. Add the separate public read-only spectator and deployment trust split (#8/#12).
 13. Add durable session history/artifact retention (#11).
 14. Add MCP only as an adapter over the stable private session service (#14).
@@ -167,4 +169,4 @@ Benchmark reports should be used across longer/multiple replay scenarios to deci
 
 Future games are expected to own different observation models; the generic runtime should not absorb Tetris board geometry, piece IDs, RAM addresses, lookahead rules, benchmark scenario semantics, or replay-state hashing rules.
 
-See [`live-sessions.md`](live-sessions.md) for the session API, frame/pacing semantics, and ownership details and [`benchmark.md`](benchmark.md) for benchmark fairness and limitations.
+See [`live-sessions.md`](live-sessions.md) for the session API, frame/pacing semantics, and ownership details, [`operator-api.md`](operator-api.md) for the private control plane, [`operator-console.md`](operator-console.md) for browser mounting/security, and [`benchmark.md`](benchmark.md) for benchmark fairness and limitations.
