@@ -2,7 +2,7 @@
 
 GamePilot is a game-agent runtime built on top of the public [`pkg/gomeboy`](https://github.com/maestroi/gomeboy/tree/main/pkg/gomeboy) API.
 
-The first supported profile is **Game Boy Tetris, Rev 1**. The current vertical slice loads the exact ROM, boots Type A level 0 deterministically, decodes structured state from memory, executes verified game-level placements, supports one-ply heuristic, two-ply preview lookahead, and OpenAI-compatible LLM planners, records/verifies planner-independent replays, and benchmarks planners on fixed replay-derived scenarios without screenshots or vision.
+The first supported profile is **Game Boy Tetris, Rev 1**. The current vertical slice loads the exact ROM, boots Type A level 0 deterministically, decodes structured state from memory, executes verified game-level placements, supports one-ply heuristic, two-ply preview lookahead, and OpenAI-compatible LLM planners, records/verifies planner-independent replays, benchmarks planners on fixed replay-derived scenarios, and can host those planners inside a cancellable long-lived session runtime.
 
 ## Current slice
 
@@ -24,11 +24,18 @@ validated replay
   -> fixed initial board + piece sequence
   -> heuristic / lookahead / optional LLM benchmark
   -> comparable board quality + planner latency report
+
+long-lived mode
+  -> session Manager
+  -> one owner goroutine per emulator
+  -> copied observation/decision snapshots for readers
+  -> cancellation + terminal status
+  -> finalized replay bytes
 ```
 
 Implemented now:
 
-- Gomeboy `v1.0.0` integration through a thin session wrapper
+- Gomeboy `v1.0.0` integration through a thin emulator session wrapper
 - exact Tetris Rev 1 SHA-256 gating
 - deterministic Type A level-0 startup using frame stepping and button input
 - 18x10 settled-board decoding from the ROM's WRAM playfield buffer
@@ -55,9 +62,14 @@ Implemented now:
 - replay-backed fixed-sequence planner benchmarking for heuristic, lookahead, and optional LLM planning
 - benchmark metrics for survival, lines, final height/holes/bumpiness, planner latency, LLM retries, candidate compression, placement trace, and final board
 - versioned benchmark JSON reports with a canonical scenario hash
-- ROM-free tests for emulator-independent planning, lookahead, LLM HTTP compatibility, output validation/retries, replay hashing, benchmarking, serialization, and verification
+- `runtime/sessions` long-lived lifecycle manager with queued/starting/running/stopping/done/failed states
+- exactly one runner goroutine owns each live emulator; readers see only copied snapshots/replay bytes
+- programmatic Tetris live runner for heuristic/lookahead plus an LLM planner factory hook
+- cancellation-safe partial replay finalization and exact-once emulator close
+- multiple independent managed sessions inside one process
+- ROM-free tests for emulator-independent planning, lookahead, LLM HTTP compatibility, output validation/retries, replay hashing, benchmarking, serialization/verification, and live-session lifecycle ownership
 
-Not implemented yet: MCP, deeper-than-preview search, or a provider-specific Structured Outputs adapter.
+Not implemented yet: rendered live framebuffer publication, real-time/watchable pacing, the public spectator, the private operator/session API, MCP, deeper-than-preview search, or a provider-specific Structured Outputs adapter.
 
 ## Run
 
@@ -86,6 +98,25 @@ go run ./cmd/gamepilot \
   -planner replay \
   -replay-in lookahead-25.json
 ```
+
+### Programmatic live sessions
+
+The long-lived runtime is a Go package rather than a second emulator implementation. A server can start a session and read copied snapshots while the owner goroutine runs the normal profile/planner/controller loop:
+
+```go
+manager := sessions.NewTetrisManager(nil)
+id, err := manager.Start(sessions.LaunchConfig{
+    ROMPath:      "./roms/tetris.gb",
+    Profile:      tetris.ProfileID,
+    Planner:      "lookahead",
+    MoveLimit:    25,
+    RecordReplay: true,
+})
+```
+
+`Manager.Snapshot`, `List`, `Stop`, `Wait`, and `Replay` do not expose the emulator. See [`docs/live-sessions.md`](docs/live-sessions.md).
+
+Rendered Game Boy frames are intentionally **not** part of this slice yet: the current production Tetris session adapter still uses the memory-only emulator path. Frame publication is the next live-product issue.
 
 ### Planner benchmark
 
@@ -122,7 +153,7 @@ The summary reports pieces placed, lines cleared, top-out, final aggregate heigh
 
 The default LLM base URL is `http://localhost:1234/v1`. Supply the model identifier exposed by your server. Keyless local servers can disable the API-key environment lookup with `-llm-api-key-env ""`.
 
-GamePilot defaults to `-llm-thinking off`, `-llm-max-tokens 64`, and `-llm-candidates 10`. The candidate list is no longer the full raw one-ply action set: GamePilot deduplicates equivalent first outcomes, evaluates each with the known preview piece, sorts them deterministically, and sends only the best N to the model.
+GamePilot defaults to `-llm-thinking off`, `-llm-max-tokens 64`, and `-llm-candidates 10`. GamePilot deduplicates equivalent first outcomes, evaluates each with the known preview piece, sorts them deterministically, and sends only the best N to the model.
 
 ```bash
 go run ./cmd/gamepilot \
@@ -136,20 +167,10 @@ go run ./cmd/gamepilot \
   -replay-out llm-5.json
 ```
 
-The startup line prints the effective settings:
-
-```text
-LLM: model=<model-id> base_url=http://localhost:8002/v1 thinking=off max_tokens=64 candidates=10
-```
-
-Move logs also show prompt compression, for example `candidates=10/34` means the model saw the best 10 of 34 strategically distinct first-move outcomes.
-
 For Qwen3/vLLM-style endpoints, non-thinking mode sends `chat_template_kwargs.enable_thinking=false`. If a compatible server rejects the provider-specific thinking field, use `-llm-thinking auto` to omit it. `-llm-thinking on` explicitly enables it.
 
-For a hosted compatible API, set the normal environment variables instead of putting secrets on the command line. `-llm-thinking auto` is safest when the provider does not implement Qwen/vLLM chat-template extensions.
-
-The model never sends emulator inputs. GamePilot computes and ranks deterministic candidates, asks the model to choose one shortlisted current-piece placement, strictly validates the returned JSON, and only then passes the selected `Placement` to the same controller used by deterministic planner modes. The simulated preview reply is advisory only; the real ROM is observed again after every executed placement.
+The model never sends emulator inputs. GamePilot computes and ranks deterministic candidates, asks the model to choose one shortlisted current-piece placement, strictly validates the returned JSON, and only then passes the selected `Placement` to the same controller used by deterministic planner modes.
 
 `-replay-out` works with `place`, `heuristic`, `lookahead`, and `llm`. Replay verification does not invoke any planner.
 
-See [`docs/architecture.md`](docs/architecture.md), [`docs/benchmark.md`](docs/benchmark.md), [`docs/lookahead.md`](docs/lookahead.md), [`docs/llm-planner.md`](docs/llm-planner.md), [`docs/replay.md`](docs/replay.md), and [`docs/tetris-rev1.md`](docs/tetris-rev1.md).
+See [`docs/architecture.md`](docs/architecture.md), [`docs/live-sessions.md`](docs/live-sessions.md), [`docs/benchmark.md`](docs/benchmark.md), [`docs/lookahead.md`](docs/lookahead.md), [`docs/llm-planner.md`](docs/llm-planner.md), [`docs/replay.md`](docs/replay.md), and [`docs/tetris-rev1.md`](docs/tetris-rev1.md).
