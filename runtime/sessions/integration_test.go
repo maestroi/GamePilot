@@ -3,6 +3,7 @@ package sessions
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"testing"
 	"time"
