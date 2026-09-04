@@ -29,7 +29,7 @@ const (
 )
 
 var (
-	ErrSessionNotFound  = errors.New("sessions: session not found")
+	ErrSessionNotFound   = errors.New("sessions: session not found")
 	ErrReplayUnavailable = errors.New("sessions: replay unavailable")
 	ErrFrameUnavailable  = errors.New("sessions: frame unavailable")
 )
@@ -52,6 +52,7 @@ type LaunchConfig struct {
 	Planner        string         `json:"planner"`
 	MoveLimit      int            `json:"move_limit,omitempty"` // 0 means run until terminal/cancelled.
 	RecordReplay   bool           `json:"record_replay"`
+	Pacing         PacingMode     `json:"pacing,omitempty"`
 	PlannerOptions PlannerOptions `json:"planner_options,omitempty"`
 }
 
@@ -72,40 +73,44 @@ type Frame struct {
 // Decision are profile/planner-specific JSON payloads so this lifecycle layer
 // does not need to know Tetris board geometry or future games' action schemas.
 type Snapshot struct {
-	ID              string          `json:"id"`
-	Status          Status          `json:"status"`
-	Config          LaunchConfig    `json:"config"`
-	Profile         string          `json:"profile,omitempty"`
-	ROMSHA256       string          `json:"rom_sha256,omitempty"`
-	CartridgeTitle  string          `json:"cartridge_title,omitempty"`
-	Frame           uint64          `json:"frame"`
-	Moves           int             `json:"moves"`
-	Observation     json.RawMessage `json:"observation,omitempty"`
-	Decision        json.RawMessage `json:"decision,omitempty"`
-	PlannerActivity string          `json:"planner_activity,omitempty"`
-	Sequence        uint64          `json:"sequence"`
-	FrameSequence   uint64          `json:"frame_sequence,omitempty"`
-	FrameAvailable  bool            `json:"frame_available"`
-	Reason          string          `json:"reason,omitempty"`
-	Error           string          `json:"error,omitempty"`
-	CreatedAt       time.Time       `json:"created_at"`
-	StartedAt       time.Time       `json:"started_at,omitempty"`
-	UpdatedAt       time.Time       `json:"updated_at"`
-	EndedAt         time.Time       `json:"ended_at,omitempty"`
+	ID               string          `json:"id"`
+	Status           Status          `json:"status"`
+	Config           LaunchConfig    `json:"config"`
+	Profile          string          `json:"profile,omitempty"`
+	ROMSHA256        string          `json:"rom_sha256,omitempty"`
+	CartridgeTitle   string          `json:"cartridge_title,omitempty"`
+	Frame            uint64          `json:"frame"`
+	Moves            int             `json:"moves"`
+	Observation      json.RawMessage `json:"observation,omitempty"`
+	Decision         json.RawMessage `json:"decision,omitempty"`
+	PlannerActivity  string          `json:"planner_activity,omitempty"`
+	PlannerStartedAt time.Time       `json:"planner_started_at,omitempty"`
+	PlannerLatencyMS int64           `json:"planner_latency_ms,omitempty"`
+	Sequence         uint64          `json:"sequence"`
+	FrameSequence    uint64          `json:"frame_sequence,omitempty"`
+	FrameAvailable   bool            `json:"frame_available"`
+	Reason           string          `json:"reason,omitempty"`
+	Error            string          `json:"error,omitempty"`
+	CreatedAt        time.Time       `json:"created_at"`
+	StartedAt        time.Time       `json:"started_at,omitempty"`
+	UpdatedAt        time.Time       `json:"updated_at"`
+	EndedAt          time.Time       `json:"ended_at,omitempty"`
 }
 
 // Update is published by the single runner goroutine at meaningful boundaries.
 // Manager copies JSON/image fields before making them visible to readers.
 type Update struct {
-	Profile         string
-	ROMSHA256       string
-	CartridgeTitle  string
-	Frame           uint64
-	Moves           int
-	Observation     json.RawMessage
-	Decision        json.RawMessage
-	PlannerActivity string
-	Image           *Frame
+	Profile          string
+	ROMSHA256        string
+	CartridgeTitle   string
+	Frame            uint64
+	Moves            int
+	Observation      json.RawMessage
+	Decision         json.RawMessage
+	PlannerActivity  string
+	PlannerStartedAt time.Time
+	PlannerLatencyMS int64
+	Image            *Frame
 }
 
 // Result is the terminal runner output. Replay is an encoded profile replay,
@@ -167,6 +172,11 @@ func (m *Manager) Start(config LaunchConfig) (string, error) {
 	if m == nil || m.factory == nil {
 		return "", fmt.Errorf("sessions: runner factory is required")
 	}
+	pacing, err := normalizePacing(config.Pacing)
+	if err != nil {
+		return "", err
+	}
+	config.Pacing = pacing
 	if err := validateLaunchConfig(config); err != nil {
 		return "", err
 	}
@@ -265,6 +275,7 @@ func (m *Manager) run(ctx context.Context, s *managedSession, runner Runner) {
 	s.snap.UpdatedAt = now
 	s.snap.Sequence++
 	s.snap.PlannerActivity = ""
+	s.snap.PlannerStartedAt = time.Time{}
 	if err == nil {
 		s.snap.Status = StatusDone
 		s.snap.Reason = result.Reason
@@ -306,6 +317,8 @@ func (s *managedSession) applyUpdate(update Update, now time.Time) {
 	s.snap.Observation = cloneJSON(update.Observation)
 	s.snap.Decision = cloneJSON(update.Decision)
 	s.snap.PlannerActivity = update.PlannerActivity
+	s.snap.PlannerStartedAt = update.PlannerStartedAt
+	s.snap.PlannerLatencyMS = update.PlannerLatencyMS
 	s.snap.Sequence++
 	s.snap.UpdatedAt = now
 	if update.Image != nil {
