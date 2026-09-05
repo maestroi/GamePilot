@@ -17,14 +17,17 @@ Session runtime = long-lived lifecycle + copied read model + presentation pacing
 
 ```text
 GamePilot
-├── emulator/session       thin lifetime/checkpoint wrapper around pkg/gomeboy
-├── planner/openai         minimal OpenAI-compatible chat-completions transport
-├── profiles               minimal profile-selection boundary
-├── profiles/tetris        Tetris-specific addresses, semantics, planning, benchmark, controller, and replay state
-├── runtime/sessions       lifecycle, frame publication, pacing, read transport, and Tetris runner adapter
-├── runtime/operatorapi    private authenticated session control plane and optional replay download
+├── emulator/session        thin lifetime/checkpoint wrapper around pkg/gomeboy
+├── planner/openai          minimal OpenAI-compatible chat-completions transport
+├── profiles                minimal profile-selection boundary
+├── profiles/tetris         Tetris-specific addresses, semantics, planning, benchmark, controller, and replay state
+├── runtime/sessions        lifecycle, frame publication, pacing, read transport, and Tetris runner adapter
+├── runtime/operatorapi     private authenticated session control plane and optional replay download
 ├── runtime/operatorconsole embedded same-origin private browser operator UI
-└── cmd/gamepilot          runnable CLI and benchmark entrypoint
+├── runtime/spectatorapi    explicit allowlisted public read-only watch DTO/API
+├── runtime/spectator       embedded public browser spectator UI
+├── runtime/websurfaces     separate public/private HTTP server composition and limits
+└── cmd/gamepilot           runnable CLI and benchmark entrypoint
 ```
 
 The emulator session package does not recreate emulation primitives. Profiles and controllers use Gomeboy's public `StepFrame`/`StepFrames`, `Press`/`Release`, `Peek8`/`PeekInto`, `FrameCount`, `SaveState`/`LoadState`, cartridge metadata, ROM SHA-256, and framebuffer output directly.
@@ -50,6 +53,10 @@ One managed session goroutine is the only caller allowed to open, step, inspect,
 `runtime/sessions` stores profile observation and planner decision payloads as copied JSON plus one latest encoded framebuffer image. That keeps lifecycle/state management generic while leaving Tetris board/action semantics inside `profiles/tetris`. Slow readers may miss presentation frames, but there is no frame queue and therefore no observer backpressure.
 
 Internal ROM paths are excluded from serialized session snapshots. Model credentials/provider URLs are not part of session launch configuration; private server code resolves safe aliases to those secrets outside the session read model. `runtime/operatorapi` enforces the alias allowlists and Bearer-authenticated mutation/read boundary, while `runtime/operatorconsole` embeds only deployment-agnostic assets and delegates its `/v1/*` traffic back to that API.
+
+The public side is a different trust boundary, not a filtered operator handler. `runtime/spectatorapi` depends on a read-only `SessionReader` interface and builds explicit `PublicSession` DTOs instead of serializing `sessions.Snapshot`. It allowlists only spectator-safe state and omits ROM hashes/paths, raw errors/reasons, raw observation/decision payloads, replay bytes, operator metadata, and provider configuration. `runtime/spectator` constructs that API internally, so an arbitrary private handler cannot be mounted behind the public assets.
+
+`runtime/websurfaces` composes the public spectator and private operator as different `http.Server` values with different default bind addresses and HTTP limits. The public server receives only the spectator handler; the private server receives the authenticated operator console/API. Network policy remains a deployment responsibility, but the public process/port route table never contains operator mutations.
 
 ## Deterministic loop
 
@@ -110,6 +117,26 @@ Realtime mode samples encoded PNG publication around 30 fps and publishes immedi
 
 Planner waits are represented separately from emulator pacing. A session exposes `planner_started_at` while planning and `planner_latency_ms` once execution begins, so an LLM delay is visible as planner activity instead of being confused with a frozen emulator.
 
+## Public spectator trust boundary
+
+The public watch flow is deliberately one-way:
+
+```text
+internet browser
+      ↓ GET only
+runtime/spectator
+      ↓
+runtime/spectatorapi
+      ↓ copied read capability only
+sessions.Manager
+```
+
+The public JSON contains a selected active/recent session plus a bounded completed-session tail. Tetris observation JSON is decoded into an explicit board/piece/score/lines/level DTO, and planner decision JSON is reduced to the latest validated placement. Arbitrary internal JSON fields therefore do not survive projection.
+
+The latest frame endpoint only serves retained `image/png` data and never reflects arbitrary internal MIME types. Backend failures are collapsed to a generic `spectator_unavailable` response so raw errors cannot cross the public boundary.
+
+Public assets contain no operator token or authentication storage. Private paths such as `/v1/config`, `/v1/sessions`, stop/delete controls, replay download, ROM aliases, and model-provider configuration are not routed by the spectator handler.
+
 ## Preview-piece lookahead
 
 Tetris Rev 1 exposes the next piece in memory, so the profile can evaluate two plies without guessing. For each strategically distinct current placement it simulates the current piece, then every legal reply for the known preview piece, and evaluates the final leaf board. Equivalent first moves that produce the same settled board are collapsed before ranking so symmetric raw rotations do not consume multiple shortlist entries.
@@ -158,10 +185,10 @@ Completed:
 9. Rendered Gomeboy frame publication plus GET-only structured snapshot/frame transport.
 10. Watchable realtime session pacing and intermediate controller-frame publication.
 11. Private Bearer-authenticated session control API and embedded browser operator console (#9/#10).
+12. Explicit public read-only spectator plus separated public/private web trust surfaces (#8/#12).
 
 Next live-product slices:
 
-12. Add the separate public read-only spectator and deployment trust split (#8/#12).
 13. Add durable session history/artifact retention (#11).
 14. Add MCP only as an adapter over the stable private session service (#14).
 
@@ -169,4 +196,4 @@ Benchmark reports should be used across longer/multiple replay scenarios to deci
 
 Future games are expected to own different observation models; the generic runtime should not absorb Tetris board geometry, piece IDs, RAM addresses, lookahead rules, benchmark scenario semantics, or replay-state hashing rules.
 
-See [`live-sessions.md`](live-sessions.md) for the session API, frame/pacing semantics, and ownership details, [`operator-api.md`](operator-api.md) for the private control plane, [`operator-console.md`](operator-console.md) for browser mounting/security, and [`benchmark.md`](benchmark.md) for benchmark fairness and limitations.
+See [`live-sessions.md`](live-sessions.md) for the session API, frame/pacing semantics, and ownership details, [`operator-api.md`](operator-api.md) for the private control plane, [`operator-console.md`](operator-console.md) for private browser mounting/security, [`public-spectator.md`](public-spectator.md) for the public DTO/routes/deployment trust boundary, and [`benchmark.md`](benchmark.md) for benchmark fairness and limitations.
