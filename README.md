@@ -9,9 +9,9 @@ The first supported game is **Game Boy Tetris, Rev 1**. GamePilot boots Type A l
 - **Autonomous play.** Heuristic, two-ply lookahead, and OpenAI-compatible LLM planners all emit the same `Placement{Rotation, TargetColumn}` and share one controller.
 - **Reproducible runs.** Placements and decoded state are recorded as versioned JSON replays and can be verified from a fresh ROM boot.
 - **Planner comparison.** A validated replay becomes a fixed piece sequence so heuristic, lookahead, and LLM planners can be scored on the same workload.
-- **Observable sessions.** A long-lived session manager hosts play inside a server process, publishes copied snapshots and PNG frames, and exposes a private authenticated operator API plus an embedded browser console.
+- **Observable sessions.** A long-lived session manager hosts play inside a server process, publishes copied snapshots and PNG frames, and exposes both a private authenticated operator surface and a separate public read-only spectator surface.
 
-GamePilot is a Go library, CLI, and private operator console. The public spectator is not included yet.
+GamePilot is a Go library and CLI with an embedded private operator console plus a public read-only spectator UI.
 
 ## Requirements
 
@@ -189,6 +189,38 @@ return http.ListenAndServe("127.0.0.1:8080", handler)
 
 Keep this listener private (for example loopback plus a VPN or reverse proxy). Details: [docs/operator-console.md](docs/operator-console.md).
 
+## Public spectator
+
+`runtime/spectatorapi` exposes a separate allowlisted read model instead of serializing `sessions.Snapshot` or proxying the private operator API. The browser receives only spectator-safe session state: status, sanitized planner/model labels, Tetris board and pieces, score/lines/level, latest placement, elapsed progress, a bounded completed-session tail, and the latest PNG frame.
+
+Public routes are GET-only:
+
+```text
+GET /v1/watch
+GET /v1/watch?session=<id>
+GET /v1/frame/{id}
+```
+
+`runtime/websurfaces` keeps the public spectator and private operator on separate `http.Server` instances and route tables:
+
+```go
+servers, err := websurfaces.NewServers(websurfaces.Options{
+    Manager: manager,
+    Operator: operatorapi.Options{
+        OperatorToken: os.Getenv("GAMEPILOT_OPERATOR_TOKEN"),
+        ROMs:           romCatalog,
+        Profiles:       profileCatalog,
+        Models:         modelCatalog,
+    },
+    PublicAddr:  ":8080",
+    PrivateAddr: "127.0.0.1:8081",
+})
+```
+
+The public handler does not register `/v1/config`, launch, stop, delete, replay, ROM catalog, or model-provider routes. Keep the private listener behind loopback/private networking or a VPN even though it also requires Bearer authentication.
+
+Details: [docs/public-spectator.md](docs/public-spectator.md).
+
 ## Architecture
 
 ```text
@@ -207,12 +239,15 @@ Planners choose placements. They do not own frame timing, collision, lock detect
 
 ```text
 GamePilot
-├── emulator/session    thin wrapper around pkg/gomeboy
-├── planner/openai      OpenAI-compatible chat-completions client
-├── profiles/tetris     observation, planning, controller, replay, benchmark
+├── emulator/session         thin wrapper around pkg/gomeboy
+├── planner/openai           OpenAI-compatible chat-completions client
+├── profiles/tetris          observation, planning, controller, replay, benchmark
 ├── runtime/sessions         long-lived lifecycle, frames, pacing
 ├── runtime/operatorapi      private authenticated control plane
 ├── runtime/operatorconsole  embedded private browser console
+├── runtime/spectatorapi     explicit public read-only DTO/API
+├── runtime/spectator        embedded public watch UI
+├── runtime/websurfaces      separated public/private HTTP server composition
 └── cmd/gamepilot            CLI
 ```
 
@@ -229,11 +264,12 @@ GamePilot
 | [docs/live-sessions.md](docs/live-sessions.md) | Session manager, frames, pacing |
 | [docs/operator-api.md](docs/operator-api.md) | Auth, catalog, routes, limits |
 | [docs/operator-console.md](docs/operator-console.md) | Embedded private browser console |
+| [docs/public-spectator.md](docs/public-spectator.md) | Public DTO, routes, security headers, and trust boundary |
 
 ## Status
 
-Implemented: Tetris Rev 1 observation and control, heuristic and lookahead planners, OpenAI-compatible LLM planning, replays, planner benchmarks, long-lived sessions with realtime pacing and frame capture, a private operator API, and an embedded private operator console.
+Implemented: Tetris Rev 1 observation and control, heuristic and lookahead planners, OpenAI-compatible LLM planning, replays, planner benchmarks, long-lived sessions with realtime pacing and frame capture, a private operator API and console, an explicit public spectator API/UI, and separate public/private web trust surfaces.
 
-Not implemented: the public spectator, durable session history, MCP, deeper-than-preview search, or a provider-specific Structured Outputs adapter.
+Not implemented: durable session history, MCP, deeper-than-preview search, or a provider-specific Structured Outputs adapter.
 
 You must supply your own legally obtained ROM. GamePilot does not distribute copyrighted game data.
