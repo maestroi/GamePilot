@@ -31,8 +31,9 @@ long-lived mode
   -> copied observation/decision snapshots
   -> latest encoded Game Boy frame
   -> optional realtime presentation pacing
-  -> private authenticated operator API
-  -> embedded private operator console
+  -> private authenticated operator API + embedded operator console
+  -> explicit public spectator DTO/API + embedded watch UI
+  -> separate public/private HTTP trust surfaces
   -> cancellation + terminal status
   -> finalized replay bytes
 ```
@@ -69,8 +70,11 @@ Implemented now:
 - allowlisted ROM/profile/planner/model launch configuration with no raw filesystem paths or provider secrets in requests
 - terminal-only retained-session deletion, structured API errors, mutation body/rate/time limits, and auth-disabled route removal
 - `runtime/operatorconsole` dependency-free embedded private browser UI for launch, active-first session management, live framebuffer/Tetris state, planner metadata, bounded activity events, stop/delete, and replay download
+- `runtime/spectatorapi` explicit allowlisted public read model with bounded completed-session history and generic fail-closed errors
+- `runtime/spectator` dependency-free public watch UI for live framebuffer, board/pieces, score/lines/level, planner summary, and recent completed sessions
+- `runtime/websurfaces` separate public/private `http.Server` composition with different default binds, health/readiness, and HTTP limits
 
-Not implemented yet: the separate public spectator, durable session history/artifact retention, MCP, deeper-than-preview search, or a provider-specific Structured Outputs adapter.
+Not implemented yet: durable session history/artifact retention, MCP, deeper-than-preview search, or a provider-specific Structured Outputs adapter.
 
 ## Run
 
@@ -183,6 +187,38 @@ return http.ListenAndServe("127.0.0.1:8080", handler)
 
 Keep this listener private (for example loopback + VPN/reverse proxy). See [`docs/operator-console.md`](docs/operator-console.md).
 
+### Public spectator and trust split
+
+`runtime/spectatorapi` exposes a separate allowlisted read model rather than serializing `sessions.Snapshot` or reusing the private operator API. The public browser gets only spectator-safe session status, sanitized planner/model labels, Tetris board/piece/score state, latest placement, elapsed progress, a bounded completed-session tail, and the latest PNG frame.
+
+Public routes are GET-only:
+
+```text
+GET /v1/watch
+GET /v1/watch?session=<id>
+GET /v1/frame/{id}
+```
+
+`runtime/websurfaces` can compose the public spectator and private operator onto different listeners:
+
+```go
+servers, err := websurfaces.NewServers(websurfaces.Options{
+    Manager: manager,
+    Operator: operatorapi.Options{
+        OperatorToken: os.Getenv("GAMEPILOT_OPERATOR_TOKEN"),
+        ROMs:           romCatalog,
+        Profiles:       profileCatalog,
+        Models:         modelCatalog,
+    },
+    PublicAddr:  ":8080",
+    PrivateAddr: "127.0.0.1:8081",
+})
+```
+
+The public handler never receives operator routes, and tests explicitly prove `/v1/config`, launch, stop, and delete paths are unavailable on the public surface. Keep the private listener behind loopback/private networking or a VPN even though it also requires Bearer authentication.
+
+See [`docs/public-spectator.md`](docs/public-spectator.md) for the public DTO, security headers, fail-closed behavior, and deployment trust boundary.
+
 ### Planner benchmark
 
 Benchmark mode uses a validated replay as a fixed initial board + piece-sequence scenario. It does **not** reuse the replay's recorded placements. Each planner builds its own board through deterministic simulation, so heuristic and lookahead see the same workload even if separate live runs would consume different frame counts.
@@ -238,4 +274,4 @@ The model never sends emulator inputs. GamePilot computes and ranks deterministi
 
 `-replay-out` works with `place`, `heuristic`, `lookahead`, and `llm`. Replay verification does not invoke any planner.
 
-See [`docs/architecture.md`](docs/architecture.md), [`docs/live-sessions.md`](docs/live-sessions.md), [`docs/operator-api.md`](docs/operator-api.md), [`docs/operator-console.md`](docs/operator-console.md), [`docs/benchmark.md`](docs/benchmark.md), [`docs/lookahead.md`](docs/lookahead.md), [`docs/llm-planner.md`](docs/llm-planner.md), [`docs/replay.md`](docs/replay.md), and [`docs/tetris-rev1.md`](docs/tetris-rev1.md).
+See [`docs/architecture.md`](docs/architecture.md), [`docs/live-sessions.md`](docs/live-sessions.md), [`docs/operator-api.md`](docs/operator-api.md), [`docs/operator-console.md`](docs/operator-console.md), [`docs/public-spectator.md`](docs/public-spectator.md), [`docs/benchmark.md`](docs/benchmark.md), [`docs/lookahead.md`](docs/lookahead.md), [`docs/llm-planner.md`](docs/llm-planner.md), [`docs/replay.md`](docs/replay.md), and [`docs/tetris-rev1.md`](docs/tetris-rev1.md).
