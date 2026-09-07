@@ -1,7 +1,7 @@
 (() => {
 'use strict';
 const ACTIVE=new Set(['queued','starting','running','stopping']);
-const state={session:null,live:[],recent:[],selected:'',follow:true,connected:false,generation:0,frameURL:'',frameSeq:'',frameAt:0};
+const state={session:null,live:[],recent:[],selected:'',follow:true,connected:false,generation:0,frameURL:'',frameSeq:'',frameAt:0,lastLatency:0,lastLatencyID:''};
 const ids=['connection-dot','connection-label','unavailable','empty','watch','session-title','session-subtitle','status','follow-live','frame-status','game-frame','frame-placeholder','ready-state','tetris-board','current-piece','next-piece','score','lines','level','moves','elapsed','frame','planner-activity','placement','latency','model','live-list','recent-list'];
 const e={};
 document.addEventListener('DOMContentLoaded',()=>{ids.forEach(id=>e[id]=document.getElementById(id));buildBoard();e['follow-live'].onclick=followLive;const g=++state.generation;refresh().catch(handleError);poll(g,refresh,750);poll(g,refreshFrame,33);});
@@ -47,7 +47,7 @@ function render(){
   e['ready-state'].textContent=t?(t.game_over?'Game over':t.ready?'Ready':'In motion'):'State unavailable';
   e['planner-activity'].textContent=x.planner_activity==='planning'?'Planning…':'Idle';
   e.placement.textContent=placement(x.latest_placement);
-  e.latency.textContent=x.planner_latency_ms?`${x.planner_latency_ms} ms`:'—';
+  e.latency.textContent=latestLatency(x.id,x.planner_latency_ms);
   e.model.textContent=x.model_label||'—';
   if(!x.frame_available)placeholder('Waiting for frame');
 }
@@ -88,6 +88,7 @@ function buildBoard(){const f=document.createDocumentFragment();for(let i=0;i<18
 function board(data){const cells=e['tetris-board'].children;for(let r=0;r<18;r++)for(let c=0;c<10;c++){const cell=cells[r*10+c];cell.className=Number(data?.[r]?.[c])===1?'cell filled':'cell';}}
 function piece(p){return p?.kind?`${p.kind}${Number.isInteger(p.rotation)?` r${p.rotation}`:''}`:'—';}
 function placement(p){return p&&Number.isInteger(p.rotation)&&Number.isInteger(p.target_column)?`r${p.rotation} → col ${p.target_column}`:'—';}
+function latestLatency(id,ms){if(id&&id!==state.lastLatencyID){state.lastLatency=0;state.lastLatencyID=id;}if(ms){state.lastLatency=ms;state.lastLatencyID=id||state.lastLatencyID;}return state.lastLatency?`${state.lastLatency} ms`:'—';}
 function value(v){return v===0||v?String(v):'—';}
 function duration(sec){sec=Math.max(0,Number(sec)||0);const m=Math.floor(sec/60),s=Math.floor(sec%60);return m?`${m}m ${String(s).padStart(2,'0')}s`:`${s}s`;}
 function short(id){return id?String(id).slice(0,8):'—';}

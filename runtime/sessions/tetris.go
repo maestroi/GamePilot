@@ -213,8 +213,9 @@ func (r *tetrisRunner) Run(ctx context.Context, publish func(Update)) (result Re
 	if err != nil {
 		return Result{}, err
 	}
+	var lastPlannerLatencyMS int64
 	planningStarted := r.now()
-	if err := publishTetris(publish, r.config.Planner, runtime.CartridgeTitle(), hash, 0, obs, nil, "planning", image, planningStarted, 0); err != nil {
+	if err := publishTetris(publish, r.config.Planner, runtime.CartridgeTitle(), hash, 0, obs, nil, "planning", image, planningStarted, lastPlannerLatencyMS); err != nil {
 		return Result{}, err
 	}
 
@@ -234,6 +235,7 @@ func (r *tetrisRunner) Run(ctx context.Context, publish func(Update)) (result Re
 			plannerLatency = 0
 		}
 		plannerLatencyMS := plannerLatency.Milliseconds()
+		lastPlannerLatencyMS = plannerLatencyMS
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				return Result{Reason: "stopped"}, err
@@ -266,7 +268,7 @@ func (r *tetrisRunner) Run(ctx context.Context, publish func(Update)) (result Re
 			return Result{}, err
 		}
 		planningStarted = r.now()
-		if err := publishTetris(publish, r.config.Planner, runtime.CartridgeTitle(), hash, moves, obs, plan.Decision, "planning", image, planningStarted, 0); err != nil {
+		if err := publishTetris(publish, r.config.Planner, runtime.CartridgeTitle(), hash, moves, obs, plan.Decision, "planning", image, planningStarted, lastPlannerLatencyMS); err != nil {
 			return Result{}, err
 		}
 	}

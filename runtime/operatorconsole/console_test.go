@@ -78,6 +78,9 @@ func TestConsoleAssetsAndUnknownRoutes(t *testing.T) {
 		if got := res.Header().Get("Content-Type"); !strings.Contains(got, tc.contentType) {
 			t.Fatalf("%s Content-Type = %q", tc.path, got)
 		}
+		if tc.path == "/app.js" && !strings.Contains(res.Body.String(), "function latestLatency") {
+			t.Fatal("operator app.js missing latestLatency helper")
+		}
 	}
 
 	res := httptest.NewRecorder()

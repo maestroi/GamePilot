@@ -176,6 +176,15 @@ func TestRealtimeTetrisRunnerPublishesIntermediateFramesAndPlannerLatency(t *tes
 	if !sawLatency {
 		t.Fatal("planner latency was not surfaced on executing updates")
 	}
+	var nextPlan Update
+	for _, update := range updates {
+		if update.PlannerActivity == "planning" && update.Moves == 1 {
+			nextPlan = update
+		}
+	}
+	if nextPlan.PlannerLatencyMS != 125 {
+		t.Fatalf("next planning latency = %d, want last completed latency 125", nextPlan.PlannerLatencyMS)
+	}
 	if len(executingFrames) < 3 {
 		t.Fatalf("intermediate frame publications = %v, want multiple visible execution frames", executingFrames)
 	}

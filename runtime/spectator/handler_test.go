@@ -50,6 +50,16 @@ func TestSpectatorServesEmbeddedShellWithoutOperatorSecrets(t *testing.T) {
 				t.Errorf("GET %s contains private/operator marker %q", tc.path, forbidden)
 			}
 		}
+		if tc.path == "/styles.css" {
+			for _, required := range []string{"grid-template-rows:repeat(18,1fr)", "width:min(100%,250px)"} {
+				if !strings.Contains(body, required) {
+					t.Errorf("GET /styles.css missing board rule %q", required)
+				}
+			}
+		}
+		if tc.path == "/app.js" && !strings.Contains(body, "function latestLatency") {
+			t.Error("GET /app.js missing latestLatency helper")
+		}
 	}
 }
 
