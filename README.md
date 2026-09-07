@@ -110,6 +110,32 @@ The report covers pieces placed, lines cleared, top-out, aggregate height/holes,
 | `llm` | Shortlist of two-ply candidates sent to an OpenAI-compatible model |
 | `replay` | Re-execute a recorded replay from a fresh boot |
 | `benchmark` | Compare planners on a replay-derived piece sequence |
+| `serve` | Public spectator plus private operator console |
+
+### Live web
+
+One process, two listeners. The public spectator is safe to put on the internet; the operator console still needs a Bearer token and a private hostname.
+
+```bash
+GAMEPILOT_OPERATOR_TOKEN='…' go run ./cmd/gamepilot \
+  -rom ./roms/tetris.gb \
+  -planner serve
+```
+
+Defaults: public `:8080`, private `127.0.0.1:8081`. Swarm binds private `:8081` and splits traffic by DNS:
+
+| Surface | DNS | Port |
+| --- | --- | --- |
+| Public inspect | `gamepilot.maestroi.cc` | 8080 |
+| Private admin | `gamepilot.labstack.cc` | 8081 |
+
+Set `OPENAI_MODEL` (and `OPENAI_BASE_URL`) on the server to enable the LLM planner alias. The ROM is never in the image; bind-mount it at `/roms/tetris.gb`. Stack file: `deploy/stack.yml`. On the manager:
+
+```bash
+# /opt/gamepilot/roms/tetris.gb  and  /opt/gamepilot/.env
+set -a && source /opt/gamepilot/.env && set +a
+docker stack deploy --with-registry-auth -c deploy/stack.yml gamepilot
+```
 
 ## Live sessions
 
@@ -268,7 +294,7 @@ GamePilot
 
 ## Status
 
-Implemented: Tetris Rev 1 observation and control, heuristic and lookahead planners, OpenAI-compatible LLM planning, replays, planner benchmarks, long-lived sessions with realtime pacing and frame capture, a private operator API and console, an explicit public spectator API/UI, and separate public/private web trust surfaces.
+Implemented: Tetris Rev 1 observation and control, heuristic and lookahead planners, OpenAI-compatible LLM planning, replays, planner benchmarks, long-lived sessions with realtime pacing and frame capture, a private operator API and console, an explicit public spectator API/UI, separate public/private web trust surfaces, and a Swarm serve image behind `gamepilot.maestroi.cc` / `gamepilot.labstack.cc`.
 
 Not implemented: durable session history, MCP, deeper-than-preview search, or a provider-specific Structured Outputs adapter.
 
