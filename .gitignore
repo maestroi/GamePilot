@@ -8,3 +8,4 @@ roms/
 # Local binaries / output
 /gamepilot
 *.log
+deploy/.env

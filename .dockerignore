@@ -1,0 +1,8 @@
+# Nothing ROM- or save-state-shaped may enter the Docker context or image.
+roms/
+*.gb
+*.gbc
+*.sav
+*.state
+.git
+/gamepilot

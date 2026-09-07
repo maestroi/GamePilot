@@ -1,0 +1,42 @@
+# GamePilot Swarm stack.
+# Public inspect:  gamepilot.maestroi.cc  → :8080
+# Private admin:   gamepilot.labstack.cc  → :8081
+#
+# ROM must already exist at /opt/gamepilot/roms/tetris.gb on the worker.
+# Operator token and optional LLM settings come from the manager env file.
+
+services:
+  app:
+    image: ${GAMEPILOT_IMAGE:-ghcr.io/maestroi/gamepilot:latest}
+    environment:
+      GAMEPILOT_OPERATOR_TOKEN: ${GAMEPILOT_OPERATOR_TOKEN:?err}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    volumes:
+      - /opt/gamepilot/roms/tetris.gb:/roms/tetris.gb:ro
+    networks:
+      - web
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == worker
+      restart_policy:
+        condition: any
+      labels:
+        - traefik.enable=true
+        - traefik.docker.network=web
+        - traefik.http.routers.gamepilot.rule=Host(`gamepilot.maestroi.cc`)
+        - traefik.http.routers.gamepilot.entrypoints=websecure
+        - traefik.http.routers.gamepilot.tls=true
+        - traefik.http.routers.gamepilot.service=gamepilot-public
+        - traefik.http.services.gamepilot-public.loadbalancer.server.port=8080
+        - traefik.http.routers.gamepilot-admin.rule=Host(`gamepilot.labstack.cc`)
+        - traefik.http.routers.gamepilot-admin.entrypoints=web
+        - traefik.http.routers.gamepilot-admin.service=gamepilot-private
+        - traefik.http.services.gamepilot-private.loadbalancer.server.port=8081
+
+networks:
+  web:
+    external: true

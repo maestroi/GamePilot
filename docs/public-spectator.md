@@ -84,12 +84,12 @@ A reverse-proxy split looks like:
 
 ```text
 internet :443
-  -> public virtual host
+  -> gamepilot.maestroi.cc
   -> GamePilot public listener :8080
 
 private/VPN :443
-  -> operator virtual host
-  -> GamePilot private listener 127.0.0.1:8081
+  -> gamepilot.labstack.cc
+  -> GamePilot private listener :8081
 ```
 
 Do not proxy the private listener through the public virtual host, and do not mount the operator handler beneath the spectator handler.

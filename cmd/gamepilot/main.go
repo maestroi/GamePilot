@@ -24,7 +24,7 @@ func main() {
 
 func run() error {
 	romPath := flag.String("rom", "", "path to the supported Tetris Rev 1 ROM")
-	planner := flag.String("planner", "observe", "mode: observe, place, heuristic, lookahead, llm, replay, or benchmark")
+	planner := flag.String("planner", "observe", "mode: observe, place, heuristic, lookahead, llm, replay, benchmark, or serve")
 	rotation := flag.Int("rotation", 0, "raw Tetris rotation 0..3 for -planner place")
 	column := flag.Int("column", 0, "leftmost occupied board column for -planner place")
 	pieces := flag.Int("pieces", 25, "number of placements to execute or benchmark")
@@ -40,11 +40,15 @@ func run() error {
 	llmThinking := flag.String("llm-thinking", "off", "thinking mode for compatible servers: off, auto, or on")
 	llmMaxTokens := flag.Int("llm-max-tokens", 64, "maximum completion tokens per LLM placement request")
 	llmCandidates := flag.Int("llm-candidates", tetris.DefaultLLMShortlistSize, "maximum two-ply candidates included in each LLM prompt")
+	publicAddr := flag.String("public-addr", "", "public spectator listen address for -planner serve; default :8080")
+	privateAddr := flag.String("private-addr", "", "private operator listen address for -planner serve; default 127.0.0.1:8081")
+	romAlias := flag.String("rom-alias", "tetris-rev1", "operator-visible ROM alias for -planner serve")
+	operatorTokenEnv := flag.String("operator-token-env", "GAMEPILOT_OPERATOR_TOKEN", "environment variable containing the private operator Bearer token")
 	flag.Parse()
 
-	validPlanner := *planner == "observe" || *planner == "place" || *planner == "heuristic" || *planner == "lookahead" || *planner == "llm" || *planner == "replay" || *planner == "benchmark"
+	validPlanner := *planner == "observe" || *planner == "place" || *planner == "heuristic" || *planner == "lookahead" || *planner == "llm" || *planner == "replay" || *planner == "benchmark" || *planner == "serve"
 	if !validPlanner {
-		return fmt.Errorf("planner %q is not implemented; use -planner observe, place, heuristic, lookahead, llm, replay, or benchmark", *planner)
+		return fmt.Errorf("planner %q is not implemented; use -planner observe, place, heuristic, lookahead, llm, replay, benchmark, or serve", *planner)
 	}
 	if *planner != "benchmark" && *romPath == "" {
 		return errors.New("-rom is required")
@@ -69,6 +73,29 @@ func run() error {
 	}
 	if *replayOut != "" && *planner != "place" && *planner != "heuristic" && *planner != "lookahead" && *planner != "llm" {
 		return fmt.Errorf("-replay-out is only valid with -planner place, heuristic, lookahead, or llm")
+	}
+	if *planner == "serve" {
+		token := ""
+		if *operatorTokenEnv != "" {
+			token = os.Getenv(*operatorTokenEnv)
+		}
+		llmKey := ""
+		if *llmAPIKeyEnv != "" {
+			llmKey = os.Getenv(*llmAPIKeyEnv)
+		}
+		return runServe(serveOptions{
+			PublicAddr:    *publicAddr,
+			PrivateAddr:   *privateAddr,
+			OperatorToken: token,
+			ROMPath:       *romPath,
+			ROMAlias:      *romAlias,
+			LLMBaseURL:    *llmBaseURL,
+			LLMModel:      *llmModel,
+			LLMAPIKey:     llmKey,
+			LLMThinking:   *llmThinking,
+			LLMMaxTokens:  *llmMaxTokens,
+			LLMTimeout:    *llmTimeout,
+		})
 	}
 
 	var benchPlanners []tetris.BenchmarkPlanner
