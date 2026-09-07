@@ -4,7 +4,7 @@ const ACTIVE=new Set(['queued','starting','running','stopping']);
 const state={session:null,recent:[],selected:'',follow:true,connected:false,generation:0,frameURL:'',frameSeq:'',frameAt:0};
 const ids=['connection-dot','connection-label','unavailable','empty','watch','session-title','session-subtitle','status','follow-live','frame-status','game-frame','frame-placeholder','ready-state','tetris-board','current-piece','next-piece','score','lines','level','moves','elapsed','frame','planner-activity','placement','latency','model','recent-list'];
 const e={};
-document.addEventListener('DOMContentLoaded',()=>{ids.forEach(id=>e[id]=document.getElementById(id));buildBoard();e['follow-live'].onclick=followLive;const g=++state.generation;refresh().catch(handleError);poll(g,refresh,750);poll(g,refreshFrame,220);});
+document.addEventListener('DOMContentLoaded',()=>{ids.forEach(id=>e[id]=document.getElementById(id));buildBoard();e['follow-live'].onclick=followLive;const g=++state.generation;refresh().catch(handleError);poll(g,refresh,750);poll(g,refreshFrame,33);});
 
 async function refresh(){
   const query=!state.follow&&state.selected?`?session=${encodeURIComponent(state.selected)}`:'';
@@ -86,5 +86,5 @@ function title(v){return String(v||'session').replace(/(^|[-_ ])([a-z])/g,(_,a,b
 function connection(ok){state.connected=ok;e['connection-dot'].classList.toggle('live',ok);e['connection-dot'].classList.toggle('error',!ok);e['connection-label'].textContent=ok?'Public feed live':'Feed unavailable';}
 function unavailableError(){const err=new Error('spectator unavailable');err.unavailable=true;return err;}
 function handleError(err){state.connected=false;connection(false);if(err?.unavailable){e.watch.classList.add('hidden');e.empty.classList.add('hidden');e.unavailable.classList.remove('hidden');}else if(!state.session){e.watch.classList.add('hidden');e.empty.classList.remove('hidden');}}
-async function poll(g,fn,ms){while(g===state.generation){try{await fn();if(fn===refreshFrame)freshness();}catch(err){handleError(err);}await new Promise(resolve=>setTimeout(resolve,ms));}}
+async function poll(g,fn,ms){while(g===state.generation){const started=Date.now();try{await fn();if(fn===refreshFrame)freshness();}catch(err){handleError(err);}const wait=ms-(Date.now()-started);if(wait>0)await new Promise(resolve=>setTimeout(resolve,wait));}}
 })();

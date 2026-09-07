@@ -56,7 +56,7 @@ The event list is presentation state only; it is not a durable server log. Durab
 
 ## Polling and stale frames
 
-The browser polls copied session state and the latest retained frame. It never asks the emulator to step and it cannot backpressure the owner goroutine. Re-fetching the same `X-GamePilot-Sequence` does not replace the displayed image, and the UI marks a running session's framebuffer stale after a short period without a new frame publication.
+The browser polls copied session state and the latest retained frame on a 33ms period so it can keep up with the ~30fps PNG publication. It never asks the emulator to step and it cannot backpressure the owner goroutine. Re-fetching the same `X-GamePilot-Sequence` does not replace the displayed image, and the UI marks a running session's framebuffer stale after a short period without a new frame publication.
 
 ## Security headers
 

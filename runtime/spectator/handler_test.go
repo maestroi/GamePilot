@@ -12,8 +12,12 @@ import (
 type readerStub struct{}
 
 func (readerStub) List() []sessions.Snapshot { return nil }
-func (readerStub) Snapshot(string) (sessions.Snapshot, error) { return sessions.Snapshot{}, sessions.ErrSessionNotFound }
-func (readerStub) Frame(string) (sessions.Frame, error) { return sessions.Frame{}, sessions.ErrFrameUnavailable }
+func (readerStub) Snapshot(string) (sessions.Snapshot, error) {
+	return sessions.Snapshot{}, sessions.ErrSessionNotFound
+}
+func (readerStub) Frame(string) (sessions.Frame, error) {
+	return sessions.Frame{}, sessions.ErrFrameUnavailable
+}
 
 func TestSpectatorServesEmbeddedShellWithoutOperatorSecrets(t *testing.T) {
 	h, err := NewHandler(readerStub{})
@@ -46,6 +50,25 @@ func TestSpectatorServesEmbeddedShellWithoutOperatorSecrets(t *testing.T) {
 				t.Errorf("GET %s contains private/operator marker %q", tc.path, forbidden)
 			}
 		}
+	}
+}
+
+func TestSpectatorFramePollMatchesPresentationCadence(t *testing.T) {
+	h, err := NewHandler(readerStub{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/app.js", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET /app.js status=%d", rr.Code)
+	}
+	body := rr.Body.String()
+	if strings.Contains(body, "poll(g,refreshFrame,220)") {
+		t.Fatal("spectator still polls frames every 220ms")
+	}
+	if !strings.Contains(body, "poll(g,refreshFrame,33)") {
+		t.Fatalf("spectator frame poll should be 33ms to match ~30fps PNG publication: %s", body)
 	}
 }
 
