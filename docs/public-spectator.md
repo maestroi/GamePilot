@@ -16,7 +16,7 @@ The spectator reads copied data from `sessions.Manager`. Its `SessionReader` int
 GET /                    embedded spectator page
 GET /app.js              embedded dependency-free client
 GET /styles.css          embedded styles
-GET /v1/watch            selected live/recent public session summary
+GET /v1/watch            selected session plus live/recent public summaries
 GET /v1/watch?session=ID explicitly select a retained public session
 GET /v1/frame/{id}       latest PNG frame for a public session
 GET /healthz             non-sensitive liveness
@@ -43,9 +43,9 @@ Model/planner labels are treated as presentation data rather than trusted config
 
 ## Live behavior
 
-When no `session` query parameter is supplied, `/v1/watch` chooses an active session first and otherwise the most recently updated retained session. The completed-session tail is bounded to eight entries.
+When no `session` query parameter is supplied, `/v1/watch` chooses the newest-created active session. Frame publication does not change that pick, so multiple live games do not take turns. The payload also includes a bounded `live` list and a completed-session tail of eight entries each.
 
-The browser polls the public watch document independently and fetches the latest PNG on a 33ms period so it can keep up with ~30fps publication. It follows the active session by default, allows selecting a recent completed session, and can return to follow-live mode. PNG frames use `Cache-Control: no-store`; duplicate frame sequence values are not re-rendered.
+The browser polls the public watch document independently and fetches the latest PNG on a 33ms period so it can keep up with ~30fps publication. After the first live pick it pins that session id so multiple games do not swap. The live list lets a viewer choose another session; Follow live returns to the newest-created active game. PNG frames use `Cache-Control: no-store`; duplicate frame sequence values are not re-rendered.
 
 If the reader/backend is unavailable, the API fails closed with a generic `503` response:
 

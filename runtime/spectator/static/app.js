@@ -1,13 +1,13 @@
 (() => {
 'use strict';
 const ACTIVE=new Set(['queued','starting','running','stopping']);
-const state={session:null,recent:[],selected:'',follow:true,connected:false,generation:0,frameURL:'',frameSeq:'',frameAt:0};
-const ids=['connection-dot','connection-label','unavailable','empty','watch','session-title','session-subtitle','status','follow-live','frame-status','game-frame','frame-placeholder','ready-state','tetris-board','current-piece','next-piece','score','lines','level','moves','elapsed','frame','planner-activity','placement','latency','model','recent-list'];
+const state={session:null,live:[],recent:[],selected:'',follow:true,connected:false,generation:0,frameURL:'',frameSeq:'',frameAt:0};
+const ids=['connection-dot','connection-label','unavailable','empty','watch','session-title','session-subtitle','status','follow-live','frame-status','game-frame','frame-placeholder','ready-state','tetris-board','current-piece','next-piece','score','lines','level','moves','elapsed','frame','planner-activity','placement','latency','model','live-list','recent-list'];
 const e={};
 document.addEventListener('DOMContentLoaded',()=>{ids.forEach(id=>e[id]=document.getElementById(id));buildBoard();e['follow-live'].onclick=followLive;const g=++state.generation;refresh().catch(handleError);poll(g,refresh,750);poll(g,refreshFrame,33);});
 
 async function refresh(){
-  const query=!state.follow&&state.selected?`?session=${encodeURIComponent(state.selected)}`:'';
+  const query=state.selected?`?session=${encodeURIComponent(state.selected)}`:'';
   const r=await fetch(`/v1/watch${query}`,{cache:'no-store',credentials:'same-origin'});
   if(r.status===503)throw unavailableError();
   if(r.status===404&&state.selected){state.follow=true;state.selected='';return refresh();}
@@ -15,14 +15,21 @@ async function refresh(){
   const data=await r.json();
   state.connected=true;
   state.session=data?.session||null;
+  state.live=Array.isArray(data?.live)?data.live:[];
   state.recent=Array.isArray(data?.recent)?data.recent:[];
-  if(state.follow&&state.session)state.selected=state.session.id;
+  if(state.follow&&state.session&&!ACTIVE.has(state.session.status)){
+    const next=state.live.find(x=>ACTIVE.has(x.status)&&x.id!==state.session.id);
+    state.selected=next?next.id:'';
+    if(state.selected)return refresh();
+  }
+  if(state.follow&&state.session&&ACTIVE.has(state.session.status))state.selected=state.session.id;
   render();
 }
 
 function render(){
   connection(true);
   e.unavailable.classList.add('hidden');
+  renderList(e['live-list'],state.live,'No live sessions yet.');
   renderRecent();
   const x=state.session;
   if(!x){e.watch.classList.add('hidden');e.empty.classList.remove('hidden');clearFrame();return;}
@@ -45,14 +52,16 @@ function render(){
   if(!x.frame_available)placeholder('Waiting for frame');
 }
 
-function renderRecent(){
-  e['recent-list'].replaceChildren();
-  if(!state.recent.length){const p=document.createElement('p');p.className='muted';p.textContent='No completed sessions yet.';e['recent-list'].append(p);return;}
-  state.recent.forEach(x=>{
-    const b=document.createElement('button');b.type='button';b.className='recent-item'+(!state.follow&&x.id===state.selected?' selected':'');
+function renderRecent(){renderList(e['recent-list'],state.recent,'No completed sessions yet.');}
+function renderList(node,items,empty){
+  if(!node)return;
+  node.replaceChildren();
+  if(!items.length){const p=document.createElement('p');p.className='muted';p.textContent=empty;node.append(p);return;}
+  items.forEach(x=>{
+    const b=document.createElement('button');b.type='button';b.className='recent-item'+(x.id===state.selected?' selected':'');
     const a=document.createElement('strong'),m=document.createElement('span'),n=document.createElement('span');
     a.textContent=`${x.planner||'planner'} · ${short(x.id)}`;m.textContent=`${x.status||'done'} · ${x.moves??0} moves · ${duration(x.elapsed_seconds)}`;n.textContent=x.tetris?`score ${x.tetris.score??0} · ${x.tetris.lines??0} lines`:'summary available';
-    b.append(a,m,n);b.onclick=()=>select(x.id);e['recent-list'].append(b);
+    b.append(a,m,n);b.onclick=()=>select(x.id);node.append(b);
   });
 }
 
