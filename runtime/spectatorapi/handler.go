@@ -32,6 +32,7 @@ type SessionReader interface {
 // WatchResponse is the complete public JSON payload used by the spectator UI.
 type WatchResponse struct {
 	Session     *PublicSession  `json:"session,omitempty"`
+	Live        []PublicSession `json:"live"`
 	Recent      []PublicSession `json:"recent"`
 	GeneratedAt time.Time       `json:"generated_at"`
 }
@@ -147,14 +148,7 @@ func (h *handler) getWatch(res http.ResponseWriter, req *http.Request) {
 	}
 
 	sort.Slice(public, func(i, j int) bool {
-		ai, aj := isActive(public[i].Status), isActive(public[j].Status)
-		if ai != aj {
-			return ai
-		}
-		if public[i].UpdatedAt.Equal(public[j].UpdatedAt) {
-			return public[i].ID < public[j].ID
-		}
-		return public[i].UpdatedAt.After(public[j].UpdatedAt)
+		return preferWatch(public[i], public[j])
 	})
 
 	var selected *PublicSession
@@ -171,22 +165,40 @@ func (h *handler) getWatch(res http.ResponseWriter, req *http.Request) {
 		selected = &item
 	}
 
+	live := make([]PublicSession, 0, recentLimit)
 	recent := make([]PublicSession, 0, recentLimit)
 	for _, item := range public {
-		if !isTerminal(item.Status) {
-			continue
+		if isActive(item.Status) && len(live) < recentLimit {
+			live = append(live, item)
 		}
-		recent = append(recent, item)
-		if len(recent) == recentLimit {
-			break
+		if isTerminal(item.Status) && len(recent) < recentLimit {
+			recent = append(recent, item)
 		}
 	}
 
 	writeJSON(res, http.StatusOK, WatchResponse{
 		Session:     selected,
+		Live:        live,
 		Recent:      recent,
 		GeneratedAt: now,
 	})
+}
+
+func preferWatch(a, b PublicSession) bool {
+	activeA, activeB := isActive(a.Status), isActive(b.Status)
+	if activeA != activeB {
+		return activeA
+	}
+	if activeA {
+		if a.CreatedAt.Equal(b.CreatedAt) {
+			return a.ID < b.ID
+		}
+		return a.CreatedAt.After(b.CreatedAt)
+	}
+	if a.UpdatedAt.Equal(b.UpdatedAt) {
+		return a.ID < b.ID
+	}
+	return a.UpdatedAt.After(b.UpdatedAt)
 }
 
 func (h *handler) getFrame(res http.ResponseWriter, req *http.Request) {

@@ -72,6 +72,22 @@ func TestSpectatorFramePollMatchesPresentationCadence(t *testing.T) {
 	}
 }
 
+func TestSpectatorPinsSelectedWatchSession(t *testing.T) {
+	h, err := NewHandler(readerStub{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/app.js", nil))
+	body := rr.Body.String()
+	if strings.Contains(body, "!state.follow&&state.selected") {
+		t.Fatal("follow-live still omits session= and will hop between live games")
+	}
+	if !strings.Contains(body, "state.selected?`?session=") {
+		t.Fatalf("spectator should pin the selected session on /v1/watch: %s", body)
+	}
+}
+
 func TestSpectatorDoesNotDelegatePrivateRoutes(t *testing.T) {
 	h, err := NewHandler(readerStub{})
 	if err != nil {

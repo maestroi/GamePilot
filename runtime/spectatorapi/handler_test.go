@@ -46,9 +46,9 @@ func TestWatchProjectsExplicitPublicDTOAndRedactsInternals(t *testing.T) {
 		ID:     "abc123",
 		Status: sessions.StatusRunning,
 		Config: sessions.LaunchConfig{
-			ROMPath:  "/srv/private/roms/tetris.gb",
-			Profile:  "tetris",
-			Planner:  "llm",
+			ROMPath:   "/srv/private/roms/tetris.gb",
+			Profile:   "tetris",
+			Planner:   "llm",
 			MoveLimit: 99,
 			PlannerOptions: sessions.PlannerOptions{
 				Model: "https://secret.invalid/v1?key=do-not-leak",
@@ -125,7 +125,7 @@ func TestWatchSelectsActiveFirstAndBoundsCompletedTail(t *testing.T) {
 	}
 	reader.list = append(reader.list, sessions.Snapshot{
 		ID: "live1", Status: sessions.StatusRunning,
-		Config: sessions.LaunchConfig{Profile: "tetris", Planner: "lookahead"},
+		Config:  sessions.LaunchConfig{Profile: "tetris", Planner: "lookahead"},
 		Profile: "tetris", CreatedAt: now, UpdatedAt: now,
 	})
 
@@ -141,6 +141,52 @@ func TestWatchSelectsActiveFirstAndBoundsCompletedTail(t *testing.T) {
 	}
 	if len(got.Recent) != recentLimit {
 		t.Fatalf("recent=%d want %d", len(got.Recent), recentLimit)
+	}
+}
+
+func TestWatchDefaultSelectionStaysOnNewestCreatedLiveSession(t *testing.T) {
+	now := time.Date(2026, 9, 5, 18, 0, 0, 0, time.UTC)
+	older := sessions.Snapshot{
+		ID:        "live-old",
+		Status:    sessions.StatusRunning,
+		Config:    sessions.LaunchConfig{Profile: "tetris", Planner: "heuristic"},
+		Profile:   "tetris",
+		CreatedAt: now.Add(-2 * time.Minute),
+		UpdatedAt: now,
+	}
+	newer := sessions.Snapshot{
+		ID:        "live-new",
+		Status:    sessions.StatusRunning,
+		Config:    sessions.LaunchConfig{Profile: "tetris", Planner: "lookahead"},
+		Profile:   "tetris",
+		CreatedAt: now.Add(-1 * time.Minute),
+		UpdatedAt: now.Add(-30 * time.Second),
+	}
+	h := &handler{reader: &fakeReader{list: []sessions.Snapshot{older, newer}}, now: func() time.Time { return now }}
+
+	rr := httptest.NewRecorder()
+	h.getWatch(rr, httptest.NewRequest(http.MethodGet, "/v1/watch", nil))
+	var first WatchResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &first); err != nil {
+		t.Fatal(err)
+	}
+	if first.Session == nil || first.Session.ID != "live-new" {
+		t.Fatalf("selected=%#v want live-new (newest created, not latest UpdatedAt)", first.Session)
+	}
+	if len(first.Live) != 2 || first.Live[0].ID != "live-new" || first.Live[1].ID != "live-old" {
+		t.Fatalf("live=%#v want newest-created first", first.Live)
+	}
+
+	older.UpdatedAt = now.Add(time.Second)
+	h.reader = &fakeReader{list: []sessions.Snapshot{older, newer}}
+	rr = httptest.NewRecorder()
+	h.getWatch(rr, httptest.NewRequest(http.MethodGet, "/v1/watch", nil))
+	var second WatchResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &second); err != nil {
+		t.Fatal(err)
+	}
+	if second.Session == nil || second.Session.ID != "live-new" {
+		t.Fatalf("selection flipped after UpdatedAt change: %#v", second.Session)
 	}
 }
 
