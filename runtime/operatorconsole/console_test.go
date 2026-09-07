@@ -39,6 +39,25 @@ func TestConsoleServesEmbeddedShellWithoutSecrets(t *testing.T) {
 	}
 }
 
+func TestConsoleFramePollMatchesPresentationCadence(t *testing.T) {
+	h, err := NewHandler(http.NotFoundHandler())
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := httptest.NewRecorder()
+	h.ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/app.js", nil))
+	if res.Code != http.StatusOK {
+		t.Fatalf("GET /app.js status=%d", res.Code)
+	}
+	body := res.Body.String()
+	if strings.Contains(body, "poll(g,frame,220)") {
+		t.Fatal("operator console still polls frames every 220ms")
+	}
+	if !strings.Contains(body, "poll(g,frame,33)") {
+		t.Fatalf("operator frame poll should be 33ms to match ~30fps PNG publication: %s", body)
+	}
+}
+
 func TestConsoleAssetsAndUnknownRoutes(t *testing.T) {
 	h, err := NewHandler(http.NotFoundHandler())
 	if err != nil {

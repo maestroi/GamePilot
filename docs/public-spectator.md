@@ -45,7 +45,7 @@ Model/planner labels are treated as presentation data rather than trusted config
 
 When no `session` query parameter is supplied, `/v1/watch` chooses an active session first and otherwise the most recently updated retained session. The completed-session tail is bounded to eight entries.
 
-The browser polls the public watch document and latest frame independently. It follows the active session by default, allows selecting a recent completed session, and can return to follow-live mode. PNG frames use `Cache-Control: no-store`; duplicate frame sequence values are not re-rendered.
+The browser polls the public watch document independently and fetches the latest PNG on a 33ms period so it can keep up with ~30fps publication. It follows the active session by default, allows selecting a recent completed session, and can return to follow-live mode. PNG frames use `Cache-Control: no-store`; duplicate frame sequence values are not re-rendered.
 
 If the reader/backend is unavailable, the API fails closed with a generic `503` response:
 
