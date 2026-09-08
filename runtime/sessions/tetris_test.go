@@ -43,7 +43,7 @@ type fakeTetrisRuntime struct {
 	placement  tetris.Placement
 }
 
-func (f *fakeTetrisRuntime) ROMHash() string { return f.hash }
+func (f *fakeTetrisRuntime) ROMHash() string        { return f.hash }
 func (f *fakeTetrisRuntime) CartridgeTitle() string { return f.title }
 func (f *fakeTetrisRuntime) Start(ctx context.Context) error {
 	f.startCalls++

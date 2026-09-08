@@ -2,15 +2,20 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 	"time"
 
 	openaiplanner "github.com/maestroi/GamePilot/planner/openai"
+	"github.com/maestroi/GamePilot/profiles/boxxle"
 	"github.com/maestroi/GamePilot/profiles/tetris"
 	"github.com/maestroi/GamePilot/runtime/operatorapi"
 	"github.com/maestroi/GamePilot/runtime/sessions"
@@ -24,6 +29,7 @@ type serveOptions struct {
 	ROMPath       string
 	ROMAlias      string
 	ROMLabel      string
+	Profile       string
 	LLMBaseURL    string
 	LLMModel      string
 	LLMAPIKey     string
@@ -49,7 +55,7 @@ func (o serveOptions) validate() error {
 }
 
 func (o serveOptions) extraPlanners() map[string]sessions.TetrisPlannerFactory {
-	if strings.TrimSpace(o.LLMModel) == "" {
+	if o.profileID() != tetris.ProfileID || strings.TrimSpace(o.LLMModel) == "" {
 		return nil
 	}
 	client := openaiplanner.NewClient(o.LLMBaseURL, o.LLMModel, o.LLMAPIKey)
@@ -74,23 +80,43 @@ func (o serveOptions) extraPlanners() map[string]sessions.TetrisPlannerFactory {
 	}
 }
 
+func (o serveOptions) profileID() string {
+	if id := strings.TrimSpace(o.Profile); id != "" {
+		return id
+	}
+	return tetris.ProfileID
+}
+
 func (o serveOptions) operatorAPI(manager *sessions.Manager) operatorapi.Options {
+	profile := o.profileID()
 	alias := strings.TrimSpace(o.ROMAlias)
-	if alias == "" {
-		alias = "tetris-rev1"
-	}
 	label := strings.TrimSpace(o.ROMLabel)
-	if label == "" {
-		label = "Tetris Rev 1"
-	}
-	planners := []operatorapi.PlannerOption{
-		{ID: "heuristic"},
-		{ID: "lookahead"},
-	}
+	var planners []operatorapi.PlannerOption
 	var models []operatorapi.ModelOption
-	if model := strings.TrimSpace(o.LLMModel); model != "" {
-		planners = append(planners, operatorapi.PlannerOption{ID: "llm", RequiresModel: true})
-		models = []operatorapi.ModelOption{{Alias: model, Label: model}}
+	switch profile {
+	case boxxle.ProfileID:
+		if alias == "" || alias == "tetris-rev1" {
+			alias = "boxxle"
+		}
+		if label == "" {
+			label = "Boxxle (USA/Europe)"
+		}
+		planners = []operatorapi.PlannerOption{{ID: "heuristic"}}
+	default:
+		if alias == "" {
+			alias = "tetris-rev1"
+		}
+		if label == "" {
+			label = "Tetris Rev 1"
+		}
+		planners = []operatorapi.PlannerOption{
+			{ID: "heuristic"},
+			{ID: "lookahead"},
+		}
+		if model := strings.TrimSpace(o.LLMModel); model != "" {
+			planners = append(planners, operatorapi.PlannerOption{ID: "llm", RequiresModel: true})
+			models = []operatorapi.ModelOption{{Alias: model, Label: model}}
+		}
 	}
 	return operatorapi.Options{
 		Manager:       manager,
@@ -98,11 +124,11 @@ func (o serveOptions) operatorAPI(manager *sessions.Manager) operatorapi.Options
 		ROMs: []operatorapi.ROMOption{{
 			Alias:   alias,
 			Label:   label,
-			Profile: tetris.ProfileID,
+			Profile: profile,
 			Path:    o.ROMPath,
 		}},
 		Profiles: []operatorapi.ProfileOption{{
-			ID:       tetris.ProfileID,
+			ID:       profile,
 			Planners: planners,
 		}},
 		Models: models,
@@ -122,7 +148,12 @@ func (o serveOptions) servers(manager *sessions.Manager) (websurfaces.Servers, e
 }
 
 func runServe(opts serveOptions) error {
-	manager := sessions.NewTetrisManager(opts.extraPlanners())
+	profile, err := identifyROMProfile(opts.ROMPath)
+	if err != nil {
+		return err
+	}
+	opts.Profile = profile
+	manager := sessions.NewLiveManager(opts.extraPlanners())
 	defer func() { _ = manager.Close(context.Background()) }()
 
 	servers, err := opts.servers(manager)
@@ -148,6 +179,26 @@ func runServe(opts serveOptions) error {
 		shutdownServers(servers)
 		return nil
 	}
+}
+
+func identifyROMProfile(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("open ROM: %w", err)
+	}
+	defer file.Close()
+	sum := sha256.New()
+	if _, err := io.Copy(sum, file); err != nil {
+		return "", fmt.Errorf("hash ROM: %w", err)
+	}
+	hash := hex.EncodeToString(sum.Sum(nil))
+	if (boxxle.Profile{}).SupportsROM(hash) {
+		return boxxle.ProfileID, nil
+	}
+	if (tetris.Profile{}).SupportsROM(hash) {
+		return tetris.ProfileID, nil
+	}
+	return "", fmt.Errorf("unsupported ROM SHA-256 %s", hash)
 }
 
 func listen(name string, server *http.Server) error {

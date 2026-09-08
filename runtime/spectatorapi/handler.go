@@ -53,7 +53,9 @@ type PublicSession struct {
 	PlannerActivity  string           `json:"planner_activity,omitempty"`
 	PlannerLatencyMS int64            `json:"planner_latency_ms,omitempty"`
 	Tetris           *PublicTetris    `json:"tetris,omitempty"`
+	Boxxle           *PublicBoxxle    `json:"boxxle,omitempty"`
 	LatestPlacement  *PublicPlacement `json:"latest_placement,omitempty"`
+	LatestMove       *PublicMove      `json:"latest_move,omitempty"`
 	ElapsedSeconds   int64            `json:"elapsed_seconds"`
 	CreatedAt        time.Time        `json:"created_at"`
 	StartedAt        time.Time        `json:"started_at,omitempty"`
@@ -80,6 +82,20 @@ type PublicPiece struct {
 type PublicPlacement struct {
 	Rotation     int `json:"rotation"`
 	TargetColumn int `json:"target_column"`
+}
+
+type PublicBoxxle struct {
+	Grid    [9][10]string `json:"grid"`
+	PlayerX int           `json:"player_x"`
+	PlayerY int           `json:"player_y"`
+	Moves   int           `json:"moves"`
+	Set     int           `json:"set"`
+	Ready   bool          `json:"ready"`
+	Solved  bool          `json:"solved"`
+}
+
+type PublicMove struct {
+	Direction string `json:"direction"`
 }
 
 type tetrisObservation struct {
@@ -257,15 +273,19 @@ func projectSession(snap sessions.Snapshot, now time.Time) (PublicSession, bool)
 		FrameAvailable:   snap.FrameAvailable,
 		PlannerActivity:  publicPlannerActivity(snap.PlannerActivity),
 		PlannerLatencyMS: maxInt64(snap.PlannerLatencyMS, 0),
-		LatestPlacement:  publicPlacement(snap.Decision),
 		CreatedAt:        snap.CreatedAt.UTC(),
 		StartedAt:        utcOrZero(snap.StartedAt),
 		UpdatedAt:        snap.UpdatedAt.UTC(),
 		EndedAt:          utcOrZero(snap.EndedAt),
 	}
 	item.ElapsedSeconds = elapsedSeconds(snap, now)
-	if profile == "tetris" {
+	switch profile {
+	case "tetris":
 		item.Tetris = publicTetris(snap.Observation)
+		item.LatestPlacement = publicPlacement(snap.Decision)
+	case "boxxle":
+		item.Boxxle = publicBoxxle(snap.Observation)
+		item.LatestMove = publicMove(snap.Decision)
 	}
 	return item, true
 }
@@ -315,6 +335,81 @@ func publicPlacement(raw json.RawMessage) *PublicPlacement {
 		return nil
 	}
 	return &PublicPlacement{Rotation: placement.Rotation, TargetColumn: placement.TargetColumn}
+}
+
+func publicBoxxle(raw json.RawMessage) *PublicBoxxle {
+	if len(raw) == 0 {
+		return nil
+	}
+	var input boxxleObservation
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return nil
+	}
+	out := &PublicBoxxle{
+		PlayerX: maxInt(input.PlayerX, 0),
+		PlayerY: maxInt(input.PlayerY, 0),
+		Moves:   maxInt(input.Moves, 0),
+		Set:     maxInt(input.Set, 0),
+		Ready:   input.Ready,
+		Solved:  input.Solved,
+	}
+	for row := 0; row < 9; row++ {
+		for col := 0; col < 10; col++ {
+			out.Grid[row][col] = publicBoxxleCell(input.Grid[row][col])
+		}
+	}
+	return out
+}
+
+func publicBoxxleCell(value int) string {
+	switch value {
+	case 1:
+		return "#"
+	case 2:
+		return "$"
+	case 3:
+		return "."
+	case 4:
+		return "*"
+	case 5:
+		return "@"
+	case 6:
+		return "+"
+	default:
+		return " "
+	}
+}
+
+func publicMove(raw json.RawMessage) *PublicMove {
+	if len(raw) == 0 {
+		return nil
+	}
+	var input moveDecision
+	if err := json.Unmarshal(raw, &input); err != nil || input.Move == nil {
+		return nil
+	}
+	switch input.Move.Direction {
+	case "up", "down", "left", "right":
+		return &PublicMove{Direction: input.Move.Direction}
+	default:
+		return nil
+	}
+}
+
+type boxxleObservation struct {
+	Grid    [9][10]int `json:"grid"`
+	PlayerX int        `json:"player_x"`
+	PlayerY int        `json:"player_y"`
+	Moves   int        `json:"moves"`
+	Set     int        `json:"set"`
+	Ready   bool       `json:"ready"`
+	Solved  bool       `json:"solved"`
+}
+
+type moveDecision struct {
+	Move *struct {
+		Direction string `json:"direction"`
+	} `json:"move"`
 }
 
 func elapsedSeconds(snap sessions.Snapshot, now time.Time) int64 {

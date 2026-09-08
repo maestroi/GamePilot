@@ -6,6 +6,7 @@ import (
 	"image"
 	"image/png"
 
+	emulatorsession "github.com/maestroi/GamePilot/emulator/session"
 	"github.com/maestroi/gomeboy/pkg/gomeboy"
 )
 
@@ -17,7 +18,23 @@ type frameCapturer interface {
 }
 
 func (r *gomeboyTetrisRuntime) CaptureFrame() (Frame, error) {
-	emu := r.session.Emulator()
+	return captureSessionFrame(r.session)
+}
+
+func captureFrame(runtime any) (*Frame, error) {
+	capturer, ok := runtime.(frameCapturer)
+	if !ok {
+		return nil, nil
+	}
+	frame, err := capturer.CaptureFrame()
+	if err != nil {
+		return nil, fmt.Errorf("sessions: capture framebuffer: %w", err)
+	}
+	return &frame, nil
+}
+
+func captureSessionFrame(sess *emulatorsession.Session) (Frame, error) {
+	emu := sess.Emulator()
 	rendered := emu.Frame()
 	data, err := encodePNGFrame(rendered)
 	if err != nil {
@@ -30,18 +47,6 @@ func (r *gomeboyTetrisRuntime) CaptureFrame() (Frame, error) {
 		ContentType:   "image/png",
 		Data:          data,
 	}, nil
-}
-
-func captureFrame(runtime tetrisRuntime) (*Frame, error) {
-	capturer, ok := runtime.(frameCapturer)
-	if !ok {
-		return nil, nil
-	}
-	frame, err := capturer.CaptureFrame()
-	if err != nil {
-		return nil, fmt.Errorf("sessions: capture framebuffer: %w", err)
-	}
-	return &frame, nil
 }
 
 func encodePNGFrame(frame gomeboy.Frame) ([]byte, error) {

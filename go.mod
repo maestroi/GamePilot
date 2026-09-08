@@ -4,6 +4,9 @@ go 1.26.0
 
 require github.com/maestroi/gomeboy v1.0.0
 
+// Local gomeboy with echo-RAM mirroring fixed so Boxxle's nitro-copy can boot.
+replace github.com/maestroi/gomeboy => ../gomeboy
+
 require (
 	github.com/andybalholm/brotli v1.2.2 // indirect
 	github.com/bodgit/plumbing v1.3.0 // indirect

@@ -12,6 +12,7 @@ import (
 
 	"github.com/maestroi/GamePilot/emulator/session"
 	openaiplanner "github.com/maestroi/GamePilot/planner/openai"
+	"github.com/maestroi/GamePilot/profiles/boxxle"
 	"github.com/maestroi/GamePilot/profiles/tetris"
 )
 
@@ -23,10 +24,11 @@ func main() {
 }
 
 func run() error {
-	romPath := flag.String("rom", "", "path to the supported Tetris Rev 1 ROM")
+	romPath := flag.String("rom", "", "path to a supported ROM (Tetris Rev 1 or Boxxle)")
 	planner := flag.String("planner", "observe", "mode: observe, place, heuristic, lookahead, llm, replay, benchmark, or serve")
 	rotation := flag.Int("rotation", 0, "raw Tetris rotation 0..3 for -planner place")
 	column := flag.Int("column", 0, "leftmost occupied board column for -planner place")
+	direction := flag.String("direction", "right", "Boxxle step for -planner place: up, down, left, or right")
 	pieces := flag.Int("pieces", 25, "number of placements to execute or benchmark")
 	replayOut := flag.String("replay-out", "", "write a deterministic replay JSON file for place, heuristic, lookahead, or llm mode")
 	replayIn := flag.String("replay-in", "", "replay JSON file to verify with -planner replay")
@@ -140,8 +142,12 @@ func run() error {
 	}
 	defer sess.Close()
 
-	profile := tetris.Profile{}
 	hash := sess.ROMHash()
+	if (boxxle.Profile{}).SupportsROM(hash) {
+		return runBoxxle(ctx, sess, *planner, *direction, *pieces)
+	}
+
+	profile := tetris.Profile{}
 	if err := profile.RequireROM(hash); err != nil {
 		return err
 	}

@@ -21,7 +21,8 @@ GamePilot
 ├── planner/openai          minimal OpenAI-compatible chat-completions transport
 ├── profiles                minimal profile-selection boundary
 ├── profiles/tetris         Tetris-specific addresses, semantics, planning, benchmark, controller, and replay state
-├── runtime/sessions        lifecycle, frame publication, pacing, read transport, and Tetris runner adapter
+├── profiles/boxxle         Boxxle warehouse tiles/OAM, walking controller, and shortest-path search
+├── runtime/sessions        lifecycle, frame publication, pacing, read transport, Tetris and Boxxle runners
 ├── runtime/operatorapi     private authenticated session control plane and optional replay download
 ├── runtime/operatorconsole embedded same-origin private browser operator UI
 ├── runtime/spectatorapi    explicit allowlisted public read-only watch DTO/API

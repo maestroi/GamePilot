@@ -18,7 +18,7 @@ import (
 //
 // Run with:
 //
-//   GAMEPILOT_TETRIS_ROM=./roms/tetris.gb go test ./runtime/sessions -run TestTetrisManagerRealROM -v
+//	GAMEPILOT_TETRIS_ROM=./roms/tetris.gb go test ./runtime/sessions -run TestTetrisManagerRealROM -v
 func TestTetrisManagerRealROM(t *testing.T) {
 	rom := os.Getenv("GAMEPILOT_TETRIS_ROM")
 	if rom == "" {

@@ -48,13 +48,13 @@ func TestManagerRetainsOnlyLatestFrameAndCopiesData(t *testing.T) {
 				Profile:     "tetris",
 				Frame:       100,
 				Observation: json.RawMessage(`{"step":1}`),
-				Image: &Frame{EmulatorFrame: 100, Width: 1, Height: 1, ContentType: "image/png", Data: first},
+				Image:       &Frame{EmulatorFrame: 100, Width: 1, Height: 1, ContentType: "image/png", Data: first},
 			})
 			publish(Update{
 				Profile:     "tetris",
 				Frame:       101,
 				Observation: json.RawMessage(`{"step":2}`),
-				Image: &Frame{EmulatorFrame: 101, Width: 1, Height: 1, ContentType: "image/png", Data: second},
+				Image:       &Frame{EmulatorFrame: 101, Width: 1, Height: 1, ContentType: "image/png", Data: second},
 			})
 			return Result{Reason: "completed"}, nil
 		}), nil
@@ -100,7 +100,7 @@ func TestReadHandlerServesSnapshotAndPNG(t *testing.T) {
 				Moves:           2,
 				Observation:     json.RawMessage(`{"score":123}`),
 				PlannerActivity: "planning",
-				Image: &Frame{EmulatorFrame: 77, Width: 1, Height: 1, ContentType: "image/png", Data: image},
+				Image:           &Frame{EmulatorFrame: 77, Width: 1, Height: 1, ContentType: "image/png", Data: image},
 			})
 			return Result{Reason: "completed"}, nil
 		}), nil

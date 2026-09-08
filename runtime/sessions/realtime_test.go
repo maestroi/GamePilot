@@ -11,16 +11,16 @@ import (
 )
 
 type observedRuntimeFake struct {
-	initial      tetris.Observation
-	intermediate []tetris.Observation
-	after        tetris.Observation
-	currentFrame uint64
-	captures     int
-	execCalls    int
+	initial       tetris.Observation
+	intermediate  []tetris.Observation
+	after         tetris.Observation
+	currentFrame  uint64
+	captures      int
+	execCalls     int
 	observedCalls int
 }
 
-func (f *observedRuntimeFake) ROMHash() string       { return tetris.Rev1SHA256 }
+func (f *observedRuntimeFake) ROMHash() string        { return tetris.Rev1SHA256 }
 func (f *observedRuntimeFake) CartridgeTitle() string { return "TETRIS" }
 func (f *observedRuntimeFake) Start(context.Context) error {
 	f.currentFrame = f.initial.Frame
@@ -119,7 +119,7 @@ func TestRealtimeTetrisRunnerPublishesIntermediateFramesAndPlannerLatency(t *tes
 				return advancingPlanner{placement: placement, now: &clock, advance: 125 * time.Millisecond}, nil
 			},
 		},
-		now: func() time.Time { return clock },
+		now:   func() time.Time { return clock },
 		pacer: func(PacingMode) framePacer { return pacer },
 	}
 	runner, err := factory.New(LaunchConfig{
@@ -211,7 +211,7 @@ func TestFastAndRealtimeProduceEquivalentReplayBoundaries(t *testing.T) {
 					return fixedPlanner{plan: TetrisPlan{Placement: placement, Decision: json.RawMessage(`{"ok":true}`)}}, nil
 				},
 			},
-			now: time.Now,
+			now:   time.Now,
 			pacer: func(PacingMode) framePacer { return fastFramePacer{} },
 		}
 		runner, err := factory.New(LaunchConfig{

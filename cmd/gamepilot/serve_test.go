@@ -121,15 +121,26 @@ func validServeOptions() serveOptions {
 	}
 }
 
-func plannerIDs(api operatorapi.Options) []string {
-	for _, profile := range api.Profiles {
-		if profile.ID == tetris.ProfileID {
-			ids := make([]string, 0, len(profile.Planners))
-			for _, planner := range profile.Planners {
-				ids = append(ids, planner.ID)
-			}
-			return ids
-		}
+func TestServeCatalogUsesBoxxleWhenProfileSet(t *testing.T) {
+	opts := validServeOptions()
+	opts.Profile = "boxxle"
+	opts.ROMPath = "/roms/boxxle.gb"
+	api := opts.operatorAPI(sessions.NewLiveManager(nil))
+	if got := plannerIDs(api); len(got) != 1 || got[0] != "heuristic" {
+		t.Fatalf("boxxle catalog=%v", got)
 	}
-	return nil
+	if len(api.ROMs) != 1 || api.ROMs[0].Profile != "boxxle" || api.ROMs[0].Alias != "boxxle" {
+		t.Fatalf("roms=%v", api.ROMs)
+	}
+}
+
+func plannerIDs(api operatorapi.Options) []string {
+	if len(api.Profiles) != 1 {
+		return nil
+	}
+	ids := make([]string, 0, len(api.Profiles[0].Planners))
+	for _, planner := range api.Profiles[0].Planners {
+		ids = append(ids, planner.ID)
+	}
+	return ids
 }

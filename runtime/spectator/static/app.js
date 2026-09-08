@@ -39,14 +39,25 @@ function render(){
   const planner=x.planner||'planner',profile=x.profile||'session';
   e['session-title'].textContent=`${title(profile)} · ${planner}`;
   e['session-subtitle'].textContent=[short(x.id),x.model_label&&`model ${x.model_label}`,ACTIVE.has(x.status)?'live feed':'completed session'].filter(Boolean).join(' · ');
+  const boxxle=x.profile==='boxxle';
   const t=x.tetris;
-  board(t?.board);
+  const b=x.boxxle;
+  e['tetris-board'].classList.toggle('hidden', boxxle);
+  if(e['boxxle-board'])e['boxxle-board'].classList.toggle('hidden', !boxxle);
+  const pieces=e['current-piece']?.closest('.pieces');
+  if(pieces)pieces.classList.toggle('hidden', boxxle);
+  if(boxxle)warehouse(b?.grid); else board(t?.board);
   e['current-piece'].textContent=piece(t?.current_piece);
   e['next-piece'].textContent=piece(t?.next_piece);
-  e.score.textContent=value(t?.score);e.lines.textContent=value(t?.lines);e.level.textContent=value(t?.level);e.moves.textContent=value(x.moves);e.elapsed.textContent=duration(x.elapsed_seconds);e.frame.textContent=value(x.frame);
-  e['ready-state'].textContent=t?(t.game_over?'Game over':t.ready?'Ready':'In motion'):'State unavailable';
+  label(e.score,boxxle,'Set','Score');label(e.lines,boxxle,'Solved','Lines');label(e.level,boxxle,'Set','Level');
+  e.score.textContent=boxxle?value(b?.set):value(t?.score);
+  e.lines.textContent=boxxle?(b?.solved?'yes':'no'):value(t?.lines);
+  e.level.textContent=boxxle?value(b?.set):value(t?.level);
+  e.moves.textContent=value(x.moves);e.elapsed.textContent=duration(x.elapsed_seconds);e.frame.textContent=value(x.frame);
+  e['ready-state'].textContent=boxxle?(b?.solved?'Solved':b?.ready?'Ready':'In motion'):(t?(t.game_over?'Game over':t.ready?'Ready':'In motion'):'State unavailable');
   e['planner-activity'].textContent=x.planner_activity==='planning'?'Planning…':'Idle';
-  e.placement.textContent=placement(x.latest_placement);
+  label(e.placement,boxxle,'Latest move','Latest placement');
+  e.placement.textContent=boxxle?move(x.latest_move):placement(x.latest_placement);
   e.latency.textContent=latestLatency(x.id,x.planner_latency_ms);
   e.model.textContent=x.model_label||'—';
   if(!x.frame_available)placeholder('Waiting for frame');
@@ -60,7 +71,7 @@ function renderList(node,items,empty){
   items.forEach(x=>{
     const b=document.createElement('button');b.type='button';b.className='recent-item'+(x.id===state.selected?' selected':'');
     const a=document.createElement('strong'),m=document.createElement('span'),n=document.createElement('span');
-    a.textContent=`${x.planner||'planner'} · ${short(x.id)}`;m.textContent=`${x.status||'done'} · ${x.moves??0} moves · ${duration(x.elapsed_seconds)}`;n.textContent=x.tetris?`score ${x.tetris.score??0} · ${x.tetris.lines??0} lines`:'summary available';
+    a.textContent=`${x.planner||'planner'} · ${short(x.id)}`;m.textContent=`${x.status||'done'} · ${x.moves??0} moves · ${duration(x.elapsed_seconds)}`;n.textContent=x.tetris?`score ${x.tetris.score??0} · ${x.tetris.lines??0} lines`:x.boxxle?`set ${x.boxxle.set??0} · ${x.boxxle.solved?'solved':'playing'}`:'summary available';
     b.append(a,m,n);b.onclick=()=>select(x.id);node.append(b);
   });
 }
@@ -84,10 +95,20 @@ function freshness(){if(!state.frameAt)return;const stale=Date.now()-state.frame
 function placeholder(text){e['game-frame'].classList.add('hidden');e['frame-placeholder'].classList.remove('hidden');e['frame-placeholder'].textContent=text;e['frame-status'].textContent=text;}
 function clearFrame(){if(state.frameURL)URL.revokeObjectURL(state.frameURL);state.frameURL='';state.frameSeq='';if(e['game-frame']){e['game-frame'].removeAttribute('src');e['game-frame'].classList.add('hidden');}if(e['frame-placeholder'])placeholder('No frame published yet');}
 
-function buildBoard(){const f=document.createDocumentFragment();for(let i=0;i<180;i++){const n=document.createElement('span');n.className='cell';f.append(n);}e['tetris-board'].append(f);}
-function board(data){const cells=e['tetris-board'].children;for(let r=0;r<18;r++)for(let c=0;c<10;c++){const cell=cells[r*10+c];cell.className=Number(data?.[r]?.[c])===1?'cell filled':'cell';}}
+function buildBoard(){
+  const f=document.createDocumentFragment();for(let i=0;i<180;i++){const n=document.createElement('span');n.className='cell';f.append(n);}e['tetris-board'].append(f);
+  if(!e['boxxle-board']&&e['tetris-board']?.parentElement){
+    const board=document.createElement('div');board.id='boxxle-board';board.className='boxxle-board hidden';board.setAttribute('aria-label','Boxxle warehouse');
+    const cells=document.createDocumentFragment();for(let i=0;i<90;i++){const n=document.createElement('span');n.className='cell';cells.append(n);}board.append(cells);
+    e['tetris-board'].after(board);e['boxxle-board']=board;
+  }
+}
+function board(data){const cells=e['tetris-board'].children;for(let r=0;r<18;r++)for(let c=0;c<10;c++){const cell=cells[r*10+c];if(cell)cell.className=Number(data?.[r]?.[c])===1?'cell filled':'cell';}}
+function warehouse(data){const cells=e['boxxle-board']?.children;if(!cells)return;const kind={ '#':'wall','$':'box','.':'goal','*':'box-goal','@':'player','+':'player-goal'};for(let r=0;r<9;r++)for(let c=0;c<10;c++){const cell=cells[r*10+c];if(!cell)continue;const ch=data?.[r]?.[c]||' ';cell.className='cell'+(kind[ch]?' '+kind[ch]:'');}}
 function piece(p){return p?.kind?`${p.kind}${Number.isInteger(p.rotation)?` r${p.rotation}`:''}`:'—';}
 function placement(p){return p&&Number.isInteger(p.rotation)&&Number.isInteger(p.target_column)?`r${p.rotation} → col ${p.target_column}`:'—';}
+function move(p){return p?.direction||'—';}
+function label(node,boxxle,boxxleText,tetrisText){const span=node?.previousElementSibling;if(span)span.textContent=boxxle?boxxleText:tetrisText;}
 function latestLatency(id,ms){if(id&&id!==state.lastLatencyID){state.lastLatency=0;state.lastLatencyID=id;}if(ms){state.lastLatency=ms;state.lastLatencyID=id||state.lastLatencyID;}return state.lastLatency?`${state.lastLatency} ms`:'—';}
 function value(v){return v===0||v?String(v):'—';}
 function duration(sec){sec=Math.max(0,Number(sec)||0);const m=Math.floor(sec/60),s=Math.floor(sec%60);return m?`${m}m ${String(s).padStart(2,'0')}s`:`${s}s`;}

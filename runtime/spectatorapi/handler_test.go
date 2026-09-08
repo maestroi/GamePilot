@@ -250,3 +250,49 @@ func TestNilBackendFailsClosed(t *testing.T) {
 		t.Fatalf("status=%d body=%q", rr.Code, rr.Body.String())
 	}
 }
+
+func TestWatchProjectsBoxxleWarehouseAndMove(t *testing.T) {
+	now := time.Date(2026, 9, 8, 16, 0, 0, 0, time.UTC)
+	obs := json.RawMessage(`{"frame":1074,"grid":[[1,1,1,1,1,0,0,0,0,0],[1,5,0,0,1,0,0,0,0,0]],"player_x":1,"player_y":1,"moves":0,"set":1,"ready":true,"solved":false,"secret":"nope"}`)
+	decision := json.RawMessage(`{"move":{"direction":"right"},"path_length":109,"analysis":"planner-secret"}`)
+	reader := &fakeReader{list: []sessions.Snapshot{{
+		ID:               "box1",
+		Status:           sessions.StatusRunning,
+		Config:           sessions.LaunchConfig{Profile: "boxxle", Planner: "heuristic"},
+		Profile:          "boxxle",
+		Observation:      obs,
+		Decision:         decision,
+		Moves:            3,
+		CreatedAt:        now.Add(-10 * time.Second),
+		StartedAt:        now.Add(-10 * time.Second),
+		UpdatedAt:        now,
+		FrameAvailable:   true,
+		PlannerActivity:  "planning",
+		PlannerLatencyMS: 12,
+	}}}
+	h := &handler{reader: reader, now: func() time.Time { return now }}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/watch", h.getWatch)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/v1/watch", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	if strings.Contains(body, "planner-secret") || strings.Contains(body, "nope") {
+		t.Fatalf("public JSON leaked internals: %s", body)
+	}
+	var got WatchResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Session == nil || got.Session.Boxxle == nil || got.Session.Boxxle.Grid[0][0] != "#" || got.Session.Boxxle.Grid[1][1] != "@" {
+		t.Fatalf("unexpected boxxle projection: %#v", got.Session)
+	}
+	if got.Session.LatestMove == nil || got.Session.LatestMove.Direction != "right" {
+		t.Fatalf("unexpected move: %#v", got.Session.LatestMove)
+	}
+	if got.Session.Tetris != nil || got.Session.LatestPlacement != nil {
+		t.Fatalf("tetris fields should stay empty: %#v", got.Session)
+	}
+}

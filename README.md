@@ -2,7 +2,7 @@
 
 GamePilot is a game-agent runtime for Game Boy titles. It sits on top of the public [`pkg/gomeboy`](https://github.com/maestroi/gomeboy/tree/main/pkg/gomeboy) emulator API: the emulator is the source of truth, and GamePilot observes memory, chooses a move, and executes it through a deterministic controller.
 
-The first supported game is **Game Boy Tetris, Rev 1**. GamePilot boots Type A level 0, reads the playfield and pieces from WRAM, and plays by placing tetrominoes — not by sending ad-hoc button sequences.
+The first supported games are **Game Boy Tetris, Rev 1** and **Boxxle (USA/Europe)**. Tetris boots Type A level 0 and places tetrominoes. Boxxle boots set 1 room 1 and walks the warehouse one cell at a time. Neither planner sends ad-hoc button sequences.
 
 ## What it is used for
 
@@ -16,7 +16,7 @@ GamePilot is a Go library and CLI with an embedded private operator console plus
 ## Requirements
 
 - [Go](https://go.dev/dl/) 1.26 or later
-- A legally obtained **Tetris (World) Rev 1** ROM (`.gb`). ROM files are gitignored; GamePilot checks the exact SHA-256 and refuses other dumps.
+- A legally obtained **Tetris (World) Rev 1** or **Boxxle (USA/Europe)** ROM (`.gb`). ROM files are gitignored; GamePilot checks the exact SHA-256 and refuses other dumps.
 
 Optional, for the LLM planner:
 
@@ -40,6 +40,15 @@ All live play commands need `-rom`. Target column is the leftmost occupied board
 ```bash
 # Decode the first ready position.
 go run ./cmd/gamepilot -rom ./roms/tetris.gb -planner observe
+
+# Decode Boxxle room 1-1.
+go run ./cmd/gamepilot -rom ./roms/boxxle.gb -planner observe
+
+# One Boxxle step.
+go run ./cmd/gamepilot -rom ./roms/boxxle.gb -planner place -direction right
+
+# Greedy Boxxle walker (shortest-path search; stops when room 1-1 is solved).
+go run ./cmd/gamepilot -rom ./roms/boxxle.gb -planner heuristic -pieces 20
 
 # Place one piece by hand.
 go run ./cmd/gamepilot -rom ./roms/tetris.gb -planner place -rotation 1 -column 6
@@ -120,6 +129,10 @@ One process, two listeners. The public spectator is safe to put on the internet;
 GAMEPILOT_OPERATOR_TOKEN='…' go run ./cmd/gamepilot \
   -rom ./roms/tetris.gb \
   -planner serve
+
+GAMEPILOT_OPERATOR_TOKEN='…' go run ./cmd/gamepilot \
+  -rom ./roms/boxxle.gb \
+  -planner serve
 ```
 
 Defaults: public `:8080`, private `127.0.0.1:8081`. Swarm binds private `:8081` and splits traffic by DNS:
@@ -142,7 +155,7 @@ docker stack deploy --with-registry-auth -c deploy/stack.yml gamepilot
 The long-lived runtime is a Go package, not a second emulator. One goroutine owns each Gomeboy instance. Readers only see copied snapshots and the latest encoded 160×144 PNG.
 
 ```go
-manager := sessions.NewTetrisManager(nil)
+manager := sessions.NewLiveManager(nil)
 id, err := manager.Start(sessions.LaunchConfig{
     ROMPath:      "./roms/tetris.gb",
     Profile:      tetris.ProfileID,
@@ -267,7 +280,8 @@ Planners choose placements. They do not own frame timing, collision, lock detect
 GamePilot
 ├── emulator/session         thin wrapper around pkg/gomeboy
 ├── planner/openai           OpenAI-compatible chat-completions client
-├── profiles/tetris          observation, planning, controller, replay, benchmark
+├── profiles/tetris          Tetris observation, planning, controller, replay, benchmark
+├── profiles/boxxle          Boxxle warehouse observation, walking controller, shortest-path search
 ├── runtime/sessions         long-lived lifecycle, frames, pacing
 ├── runtime/operatorapi      private authenticated control plane
 ├── runtime/operatorconsole  embedded private browser console
@@ -282,7 +296,8 @@ GamePilot
 | Doc | Topic |
 | --- | --- |
 | [docs/architecture.md](docs/architecture.md) | Ownership boundaries and package layout |
-| [docs/tetris-rev1.md](docs/tetris-rev1.md) | Supported ROM and memory map |
+| [docs/tetris-rev1.md](docs/tetris-rev1.md) | Supported Tetris ROM and memory map |
+| [docs/boxxle.md](docs/boxxle.md) | Supported Boxxle ROM, tiles, and OAM |
 | [docs/lookahead.md](docs/lookahead.md) | Two-ply preview search |
 | [docs/llm-planner.md](docs/llm-planner.md) | LLM shortlist, validation, and wire protocol |
 | [docs/replay.md](docs/replay.md) | Replay format and verification |
@@ -294,7 +309,7 @@ GamePilot
 
 ## Status
 
-Implemented: Tetris Rev 1 observation and control, heuristic and lookahead planners, OpenAI-compatible LLM planning, replays, planner benchmarks, long-lived sessions with realtime pacing and frame capture, a private operator API and console, an explicit public spectator API/UI, separate public/private web trust surfaces, and a Swarm serve image behind `gamepilot.maestroi.cc` / `gamepilot.labstack.cc`.
+Implemented: Tetris Rev 1 observation and control, heuristic and lookahead planners, OpenAI-compatible LLM planning, replays, planner benchmarks, long-lived sessions with realtime pacing and frame capture, a private operator API and console, an explicit public spectator API/UI, separate public/private web trust surfaces, a Swarm serve image behind `gamepilot.maestroi.cc` / `gamepilot.labstack.cc`, and a Boxxle profile that boots room 1-1, searches a shortest warehouse path, and plays on the same spectator/operator surfaces.
 
 Not implemented: durable session history, MCP, deeper-than-preview search, or a provider-specific Structured Outputs adapter.
 

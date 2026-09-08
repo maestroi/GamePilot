@@ -147,7 +147,7 @@ func openGomeboyTetrisRuntime(path string) (tetrisRuntime, error) {
 	return &gomeboyTetrisRuntime{session: sess}, nil
 }
 
-func (r *gomeboyTetrisRuntime) ROMHash() string { return r.session.ROMHash() }
+func (r *gomeboyTetrisRuntime) ROMHash() string        { return r.session.ROMHash() }
 func (r *gomeboyTetrisRuntime) CartridgeTitle() string { return r.session.Cartridge().Title }
 func (r *gomeboyTetrisRuntime) Start(ctx context.Context) error {
 	return tetris.StartTypeAZero(ctx, r.session.Emulator())
